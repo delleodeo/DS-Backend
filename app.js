@@ -13,7 +13,7 @@ app.use(
 	cors({
 		origin: [
 			"http://localhost:3000",
-			"darylbacongco.me"
+			"https://darylbacongco.me"
 		],
 		credentials: true,
 	})
