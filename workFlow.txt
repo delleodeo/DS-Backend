@@ -1,0 +1,14 @@
+## Done Services
+1. Products Services
+2. Cart Services
+3. Order Services
+4. Auth Services
+5. User Services
+7. Admin Services
+8. Vendor Services
+9.Upload images
+
+## Working on
+8. Payment Services
+
+## Not done yet
