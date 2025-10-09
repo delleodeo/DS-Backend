@@ -10,13 +10,10 @@ const { createSession } = require("./auth/session");
 // middleware
 app.use(createSession);
 app.use(
-	cors({
-		origin: [
-			"http://localhost:3000",
-			"https://darylbacongco.me"
-		],
-		credentials: true,
-	})
+  cors({
+    origin: "https://darylbacongco.me", // your actual frontend domain
+    credentials: true, // VERY IMPORTANT — allows cookies
+  })
 );
 
 app.use(cookieParser())

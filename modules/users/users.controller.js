@@ -101,8 +101,8 @@ exports.handleSocialLogin = (req, res) => {
 		}),
 		{
 			httpOnly: false,
-			secure: process.env.NODE_ENV === "production",
-			sameSite: "lax",
+			secure: false,
+			sameSite: "none",
 			maxAge: 7 * 24 * 60 * 60 * 1000,
 		}
 	);
@@ -110,12 +110,12 @@ exports.handleSocialLogin = (req, res) => {
 	res.cookie("token", token, {
 		httpOnly: true,
 		secure: false,
-		sameSite: "lax",
+		sameSite: "none",
 		maxAge: 7 * 24 * 60 * 60 * 1000,
 	});
 
 	return res.redirect(
-		process.env.CLIENT_SUCCESS_URL || "http://localhost:3000/products"
+		process.env.CLIENT_SUCCESS_URL || "https://darylbacongco.me/products"
 	);
 };
 
