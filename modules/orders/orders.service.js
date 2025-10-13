@@ -1,6 +1,7 @@
 const Order = require("./orders.model");
 const redisClient = require("../../config/redis");
 const Admin = require("../admin/admin.model.js");
+const { emitAgreementMessage } = require("../../config/socket");
 
 const getUserOrdersKey = (userId) => `orders:user:${userId}`;
 const getVendorOrdersKey = (vendorId) => `orders:vendor:${vendorId}`;
@@ -180,4 +181,209 @@ exports.updateOrderStatusService = async (
 	]);
 
 	return updated.toObject();
+};
+
+exports.addAgreementMessageService = async ({
+	orderId,
+	userId,
+	message,
+	role,
+}) => {
+	console.log("🔍 Service Debug - addAgreementMessageService:");
+	console.log("orderId:", orderId);
+	console.log("userId:", userId);
+	console.log("message:", message);
+	console.log("role:", role);
+
+	if (!message || typeof message !== "string" || !message.trim()) {
+		throw new Error("Message content is required.");
+	}
+
+	const order = await Order.findById(orderId);
+
+	if (!order) {
+		throw new Error("Order not found.");
+	}
+
+	console.log("📋 Order found:", {
+		customerId: order.customerId.toString(),
+		vendorId: order.vendorId.toString(),
+		status: order.status
+	});
+
+	// Ensure the user is either the customer or the vendor for this order
+	const isCustomer = order.customerId.toString() === userId;
+	const isVendor = order.vendorId.toString() === userId;
+
+	if (!isCustomer && !isVendor) {
+		throw new Error("You are not authorized to update this order.");
+	}
+
+	const newMessage = {
+		sender: role, // 'customer' or 'vendor'
+		message: message.trim(),
+		timestamp: new Date(),
+	};
+
+	order.agreementMessages.push(newMessage);
+	order.updatedAt = new Date();
+
+	const updatedOrder = await order.save();
+
+	// Invalidate Redis cache for this order and related data
+	try {
+		await Promise.all([
+			redisClient.del(getOrderKey(orderId)),
+			redisClient.del(getUserOrdersKey(order.customerId.toString())),
+			redisClient.del(getVendorOrdersKey(order.vendorId.toString())),
+		]);
+	} catch (redisErr) {
+		console.warn("Redis cache invalidation failed after adding agreement message:", redisErr.message);
+	}
+
+	// Emit real-time message to all connected clients in the order room
+	try {
+		emitAgreementMessage(orderId, {
+			id: newMessage.timestamp.getTime(), // Use timestamp as unique ID
+			sender: newMessage.sender,
+			message: newMessage.message,
+			timestamp: newMessage.timestamp,
+			orderId: orderId
+		});
+	} catch (socketErr) {
+		console.warn("Socket.IO emission failed:", socketErr.message);
+	}
+
+	return updatedOrder;
+};
+
+exports.createOrder = async (req, res) => {
+	const orderData = req.body;
+
+	try {
+		// Basic validation
+		if (!orderData.userId || !orderData.items || orderData.items.length === 0) {
+			return res.status(400).json({ message: "Invalid order data" });
+		}
+
+		// Create order
+		const savedOrder = await this.createOrderService(orderData);
+
+		return res.status(201).json(savedOrder);
+	} catch (error) {
+		console.error("Error creating order:", error);
+		return res.status(500).json({ message: "Internal server error" });
+	}
+};
+
+// GET ORDERS BY USER
+exports.getOrdersByUser = async (req, res) => {
+	const userId = req.params.userId;
+
+	try {
+		const orders = await this.getOrdersByUserService(userId);
+		return res.json(orders);
+	} catch (error) {
+		console.error("Error fetching orders by user:", error);
+		return res.status(500).json({ message: "Internal server error" });
+	}
+};
+
+// GET ORDERS BY VENDOR
+exports.getOrdersByVendor = async (req, res) => {
+	const vendorId = req.params.vendorId;
+
+	try {
+		const orders = await this.getOrdersByVendorService(vendorId);
+		return res.json(orders);
+	} catch (error) {
+		console.error("Error fetching orders by vendor:", error);
+		return res.status(500).json({ message: "Internal server error" });
+	}
+};
+
+// GET ORDERS BY PRODUCT
+exports.getOrdersByProduct = async (req, res) => {
+	const productId = req.params.productId;
+
+	try {
+		const orders = await this.getOrdersByProductService(productId);
+		return res.json(orders);
+	} catch (error) {
+		console.error("Error fetching orders by product:", error);
+		return res.status(500).json({ message: "Internal server error" });
+	}
+};
+
+// GET ORDER BY ID 
+exports.getOrderById = async (req, res) => {
+	const orderId = req.params.orderId;
+
+	try {
+		const order = await this.getOrderByIdService(orderId);
+		if (!order) {
+			return res.status(404).json({ message: "Order not found" });
+		}
+		return res.json(order);
+	} catch (error) {
+		console.error("Error fetching order by ID:", error);
+		return res.status(500).json({ message: "Internal server error" });
+	}
+};
+
+// CANCEL ORDER (WITH CACHE INVALIDATION)
+exports.cancelOrder = async (req, res) => {
+	const orderId = req.params.orderId;
+
+	try {
+		const updatedOrder = await this.cancelOrderService(orderId);
+		if (!updatedOrder) {
+			return res.status(404).json({ message: "Order not found" });
+		}
+		return res.json(updatedOrder);
+	} catch (error) {
+		console.error("Error cancelling order:", error);
+		return res.status(500).json({ message: "Internal server error" });
+	}
+};
+
+// UPDATE ORDER STATUS (WITH CACHE INVALIDATION)
+exports.updateOrderStatus = async (req, res) => {
+	const orderId = req.params.orderId;
+	const { newStatus, trackingNumber } = req.body;
+
+	try {
+		const updatedOrder = await this.updateOrderStatusService(
+			orderId,
+			newStatus,
+			trackingNumber
+		);
+		if (!updatedOrder) {
+			return res.status(404).json({ message: "Order not found" });
+		}
+		return res.json(updatedOrder);
+	} catch (error) {
+		console.error("Error updating order status:", error);
+		return res.status(500).json({ message: "Internal server error" });
+	}
+};
+
+// ADD AGREEMENT MESSAGE TO ORDER
+exports.addAgreementMessage = async (req, res) => {
+	const { orderId } = req.params;
+	const { message, role } = req.body;
+	const userId = req.user._id; // Assuming user ID is available in the request object
+
+	try {
+		const updatedOrder = await this.addAgreementMessageService({
+			orderId,
+			userId,
+			message,
+			role,
+		});
+		return res.json(updatedOrder);
+	} catch (error) {
+		console.error("Error adding agreement message:", error);
+		return res.status(500).json({ message: "Internal server error" });
+	}
 };

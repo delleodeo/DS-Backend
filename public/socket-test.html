@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Socket.IO Test - DoroShop</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+        }
+        .connected {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .disconnected {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .message {
+            background-color: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+            padding: 8px;
+            margin: 5px 0;
+            border-radius: 4px;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            margin: 5px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        input, select {
+            padding: 8px;
+            margin: 5px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+        #messages {
+            max-height: 400px;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+            padding: 10px;
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔌 DoroShop Socket.IO Test</h1>
+        
+        <div id="connectionStatus" class="status disconnected">
+            ❌ Disconnected
+        </div>
+
+        <div>
+            <h3>Test Connection</h3>
+            <button onclick="connect()">Connect</button>
+            <button onclick="disconnect()">Disconnect</button>
+            <button onclick="testPing()">Test Ping</button>
+        </div>
+
+        <div>
+            <h3>Order Room Test</h3>
+            <input type="text" id="orderIdInput" placeholder="Enter Order ID" value="test-order-123">
+            <button onclick="joinOrder()">Join Order Room</button>
+            <button onclick="leaveOrder()">Leave Order Room</button>
+        </div>
+
+        <div>
+            <h3>Send Test Message</h3>
+            <input type="text" id="messageInput" placeholder="Enter test message" value="Hello from test!">
+            <button onclick="sendTestMessage()">Send to Current Order</button>
+            <button onclick="sendBroadcast()">Broadcast to All</button>
+        </div>
+
+        <div>
+            <h3>Messages</h3>
+            <button onclick="clearMessages()">Clear Messages</button>
+            <div id="messages"></div>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        let socket;
+        let currentOrderId = null;
+        const serverUrl = 'http://localhost:3002';
+
+        function addMessage(message, type = 'info') {
+            const messagesDiv = document.getElementById('messages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message';
+            messageDiv.innerHTML = `<strong>[${new Date().toLocaleTimeString()}]</strong> ${message}`;
+            messagesDiv.appendChild(messageDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        function updateStatus(connected) {
+            const statusDiv = document.getElementById('connectionStatus');
+            if (connected) {
+                statusDiv.className = 'status connected';
+                statusDiv.textContent = '✅ Connected';
+            } else {
+                statusDiv.className = 'status disconnected';
+                statusDiv.textContent = '❌ Disconnected';
+            }
+        }
+
+        function connect() {
+            if (socket && socket.connected) {
+                addMessage('Already connected!');
+                return;
+            }
+
+            addMessage('Attempting to connect...');
+            socket = io(serverUrl, {
+                transports: ['websocket', 'polling']
+            });
+
+            socket.on('connect', () => {
+                updateStatus(true);
+                addMessage(`✅ Connected with ID: ${socket.id}`);
+            });
+
+            socket.on('disconnect', (reason) => {
+                updateStatus(false);
+                addMessage(`❌ Disconnected: ${reason}`);
+            });
+
+            socket.on('connect_error', (error) => {
+                addMessage(`❌ Connection Error: ${error.message}`);
+            });
+
+            socket.on('pong', () => {
+                addMessage('🏓 Pong received!');
+            });
+
+            socket.on('joined_order', (data) => {
+                addMessage(`🚪 Joined order room: ${data.orderId}`);
+            });
+
+            socket.on('left_order', (data) => {
+                addMessage(`🚪 Left order room: ${data.orderId}`);
+            });
+
+            socket.on('new_agreement_message', (data) => {
+                addMessage(`💬 New message in order ${data.orderId}: ${JSON.stringify(data.message)}`);
+            });
+
+            socket.on('test_broadcast', (data) => {
+                addMessage(`📢 Broadcast received: ${data.message}`);
+            });
+        }
+
+        function disconnect() {
+            if (socket) {
+                socket.disconnect();
+                updateStatus(false);
+                addMessage('Disconnected manually');
+            }
+        }
+
+        function testPing() {
+            if (socket && socket.connected) {
+                addMessage('🏓 Sending ping...');
+                socket.emit('ping');
+            } else {
+                addMessage('❌ Not connected!');
+            }
+        }
+
+        function joinOrder() {
+            const orderId = document.getElementById('orderIdInput').value;
+            if (!orderId) {
+                addMessage('❌ Please enter an order ID');
+                return;
+            }
+
+            if (socket && socket.connected) {
+                currentOrderId = orderId;
+                socket.emit('join_order', orderId);
+                addMessage(`🚪 Joining order room: ${orderId}`);
+            } else {
+                addMessage('❌ Not connected!');
+            }
+        }
+
+        function leaveOrder() {
+            if (currentOrderId && socket && socket.connected) {
+                socket.emit('leave_order', currentOrderId);
+                addMessage(`🚪 Leaving order room: ${currentOrderId}`);
+                currentOrderId = null;
+            } else {
+                addMessage('❌ Not in any order room or not connected!');
+            }
+        }
+
+        async function sendTestMessage() {
+            const message = document.getElementById('messageInput').value;
+            const orderId = currentOrderId || document.getElementById('orderIdInput').value;
+
+            if (!orderId) {
+                addMessage('❌ Please join an order room first');
+                return;
+            }
+
+            try {
+                const response = await fetch(`${serverUrl}/v1/socket-test/test-socket`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ orderId, message })
+                });
+
+                const result = await response.json();
+                addMessage(`📤 ${result.message}`);
+            } catch (error) {
+                addMessage(`❌ Error sending message: ${error.message}`);
+            }
+        }
+
+        async function sendBroadcast() {
+            const message = document.getElementById('messageInput').value;
+
+            try {
+                const response = await fetch(`${serverUrl}/v1/socket-test/test-socket`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ message })
+                });
+
+                const result = await response.json();
+                addMessage(`📤 ${result.message}`);
+            } catch (error) {
+                addMessage(`❌ Error sending broadcast: ${error.message}`);
+            }
+        }
+
+        function clearMessages() {
+            document.getElementById('messages').innerHTML = '';
+        }
+
+        // Auto-connect on page load
+        window.addEventListener('load', () => {
+            addMessage('🚀 Page loaded. Click Connect to start testing!');
+        });
+    </script>
+</body>
+</html>

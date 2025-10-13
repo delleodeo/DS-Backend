@@ -15,7 +15,9 @@ app.use(
   cors({
     origin: [
       "https://darylbacongco.me",
-      "http://localhost:3000"
+      "http://localhost:3000",
+      "http://localhost:5173", // Add Vite dev server
+      "http://localhost:4173"  // Add Vite preview
     ], // your actual frontend domain
     credentials: true, // VERY IMPORTANT — allows cookies
   })
@@ -27,6 +29,9 @@ app.use(passport.session());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(morgan("dev"));
+
+// Serve static files for testing
+app.use(express.static('public'));
 
 app.use("/v1", routes);
 

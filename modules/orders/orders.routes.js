@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const orderController = require("./orders.controller");
-const {protect} = require("../../auth/auth.controller")
+const {protect, restrictTo} = require("../../auth/auth.controller")
 
 router.post("/", protect, orderController.createOrder);
 router.get("/", protect, orderController.getOrdersByUser);
@@ -10,5 +10,6 @@ router.get("/product/:productId", orderController.getOrdersByProduct);
 router.get("/:id", orderController.getOrderById);
 router.patch("/:orderId/status", orderController.updateOrderStatus);
 router.put("/cancel/:id", orderController.cancelOrder);
+router.post("/:id/agreement-message", protect, orderController.addAgreementMessage);
 
 module.exports = router;
