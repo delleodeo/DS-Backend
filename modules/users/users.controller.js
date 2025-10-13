@@ -129,3 +129,118 @@ exports.getSession = async (req, res) => {
 
 	return res.json({ auth: true, token, user: result.decoded});
 };
+
+exports.logout = async (req, res) => {
+	try {
+		// Get token from Authorization header or cookies
+		let token = req.token; // From protect middleware
+		
+		if (!token) {
+			// Fallback to cookie token
+			token = req.cookies?.token;
+		}
+		
+		if (!token) {
+			return res.status(400).json({ 
+				error: "No token provided" 
+			});
+		}
+
+		const userId = req.user?.id;
+		
+		// Call logout service
+		const result = await userService.logoutUser(token, userId);
+		
+		// Clear HTTP-only cookie
+		res.clearCookie("token", {
+			httpOnly: true,
+			secure: process.env.NODE_ENV === "production",
+			sameSite: "lax",
+		});
+		
+		return res.json({
+			success: true,
+			message: "Logged out successfully"
+		});
+		
+	} catch (error) {
+		console.error("Logout controller error:", error);
+		return res.status(error.status || 500).json({
+			error: error.message || "Failed to logout"
+		});
+	}
+};
+
+exports.logoutCookie = async (req, res) => {
+	try {
+		const token = req.cookies?.token;
+		
+		if (!token) {
+			// Even if no token, clear cookie and return success
+			res.clearCookie("token", {
+				httpOnly: true,
+				secure: process.env.NODE_ENV === "production",
+				sameSite: "lax",
+			});
+			
+			return res.json({
+				success: true,
+				message: "Logged out successfully"
+			});
+		}
+
+		// Decode token to get user ID
+		const { verifyToken } = require("../../auth/token");
+		let userId;
+		try {
+			const decoded = verifyToken(token);
+			userId = decoded.id;
+		} catch (err) {
+			// Token invalid, just clear cookie
+			console.log("Invalid token during logout, clearing cookie");
+		}
+		
+		// Call logout service if we have a valid token
+		if (userId) {
+			await userService.logoutUser(token, userId);
+		}
+		
+		// Clear HTTP-only cookie
+		res.clearCookie("token", {
+			httpOnly: true,
+			secure: process.env.NODE_ENV === "production",
+			sameSite: "lax",
+		});
+		
+		return res.json({
+			success: true,
+			message: "Logged out successfully"
+		});
+		
+	} catch (error) {
+		console.error("Cookie logout controller error:", error);
+		
+		// Always clear cookie even if error occurs
+		res.clearCookie("token", {
+			httpOnly: true,
+			secure: process.env.NODE_ENV === "production", 
+			sameSite: "lax",
+		});
+		
+		return res.status(500).json({
+			error: "Logout completed with errors"
+		});
+	}
+};
+
+// Admin function to check blacklist stats
+exports.getBlacklistStats = async (req, res) => {
+	try {
+		const TokenBlacklist = require("../../auth/tokenBlacklist");
+		const stats = await TokenBlacklist.getBlacklistStats();
+		return res.json(stats);
+	} catch (error) {
+		console.error("Blacklist stats error:", error);
+		return res.status(500).json({ error: "Failed to get blacklist stats" });
+	}
+};

@@ -138,3 +138,31 @@ exports.checkSession = async (token) => {
     return { auth: false, reason: err.name, message: err.message };
   }
 };
+
+exports.logoutUser = async (token, userId) => {
+  try {
+    const TokenBlacklist = require("../../auth/tokenBlacklist");
+    
+    // Blacklist the token
+    await TokenBlacklist.blacklistToken(token);
+    
+    // Clear user cache
+    await redisClient.del(getUserCacheKey(userId));
+    
+    // Optional: Clear other user-related cache
+    // You can add more cache clearing logic here if needed
+    
+    console.log(`User ${userId} logged out successfully`);
+    
+    return {
+      success: true,
+      message: "Logged out successfully"
+    };
+  } catch (error) {
+    console.error("Logout service error:", error);
+    throw {
+      status: 500,
+      message: "Failed to logout"
+    };
+  }
+};

@@ -10,6 +10,8 @@ const { requestRegistrationOtp } = require("../../utils/otp.controller.js");
 // register & login
 router.post("/register", userController.register);
 router.post("/login", userController.login);
+router.post("/logout", protect, userController.logout);
+router.post("/logout-cookie", userController.logoutCookie); // For cookie-based logout
 router.post("/request-otp", requestRegistrationOtp);
 
 // continue wihh google or facebook
@@ -55,4 +57,8 @@ router.put("/me", protect, userController.updateProfile);
 router.delete("/me", protect, userController.deleteUser);
 
 router.get("/session", userController.getSession);
+
+// Admin routes (add proper admin middleware if needed)
+router.get("/blacklist-stats", protect, userController.getBlacklistStats);
+
 module.exports = router;
