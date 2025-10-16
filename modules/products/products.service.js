@@ -273,7 +273,7 @@ async function searchProductsService(query, limit = 0, skip = 0) {
 async function getProductByVendor(vendorId, limit = 15, skip = 0) {
   const limitNum = parseInt(limit);
   const skipNum = parseInt(skip) || 0;
-  const cacheKey = `product:vendor:${vendorId}:limit:${limitNum}:skip:${skipNum}`;
+  const cacheKey = `product:vendor:${vendorId}`;
 
   const cached = await redisClient.get(cacheKey);
 
@@ -281,11 +281,11 @@ async function getProductByVendor(vendorId, limit = 15, skip = 0) {
 
   const vendorProducts = await Product.find({ vendorId });
 
-  const paginated = vendorProducts.slice(skipNum, limitNum);
+  // const paginated = vendorProducts.slice(skipNum, limitNum);
 
-  redisClient.set(cacheKey, JSON.stringify(paginated), { EX: 300 });
+  redisClient.set(cacheKey, JSON.stringify(vendorProducts), { EX: 300 });
 
-  return paginated;
+  return vendorProducts;
 }
 
 async function getProductByIdService(id) {

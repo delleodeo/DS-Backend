@@ -2,6 +2,7 @@ const Order = require("./orders.model");
 const redisClient = require("../../config/redis");
 const Admin = require("../admin/admin.model.js");
 const { emitAgreementMessage } = require("../../config/socket");
+const Product = require("../products/products.model");
 
 const getUserOrdersKey = (userId) => `orders:user:${userId}`;
 const getVendorOrdersKey = (vendorId) => `orders:vendor:${vendorId}`;
@@ -141,6 +142,92 @@ const ALLOWED_TRANSITIONS = {
 	cancelled: [],
 };
 
+// Helper function to delete Redis keys by pattern without blocking
+const deleteKeysByPattern = async (pattern) => {
+	if (!redisClient) return;
+	try {
+		let cursor = 0;
+		do {
+			const reply = await redisClient.scan(cursor, {
+				MATCH: pattern,
+				COUNT: 100, // Process 100 keys per iteration
+			});
+			cursor = reply.cursor;
+			const keys = reply.keys;
+			if (keys.length > 0) {
+				await redisClient.del(keys);
+			}
+		} while (cursor !== 0);
+		console.log(`Cache invalidated for pattern: ${pattern}`);
+	} catch (err) {
+		console.warn(`Error invalidating cache for pattern ${pattern}:`, err.message);
+	}
+};
+
+const updateProductStock = async (productId, optionId, quantity) => {
+	const product = await Product.findById(productId);
+	if (!product) {
+		console.error(`Product with ID ${productId} not found.`);
+		return;
+	}
+
+	// If the product uses options, update both the option and the main product
+	if (product.isOption) {
+		if (!optionId) {
+			console.error(
+				`Product ${productId} requires an option ID, but none was provided.`
+			);
+			return;
+		}
+		const option = product.option.id(optionId);
+		if (option) {
+			// Update option stock
+			option.stock -= quantity;
+			option.sold += quantity;
+
+			// Also update the main product's aggregate stock and sold counts
+			product.stock -= quantity;
+			product.sold += quantity;
+		} else {
+			console.error(
+				`Option with ID ${optionId} not found in product ${productId}.`
+			);
+			return;
+		}
+	} else {
+		// If the product does not use options, update the main product stock
+		product.stock -= quantity;
+		product.sold += quantity;
+		console.log(`Updated product ${product.name} stock and sold counts.`);
+	}
+
+	await product.save();
+
+	try {
+		// Invalidate all paginated product lists using the helper
+		await deleteKeysByPattern("products:skip*:limit*");
+
+		// Invalidate other specific product-related caches
+		const keysToDelete = [
+			`products:${productId}`,
+			`products:featured`,
+			`product:vendor:${product.vendorId}`,
+			`products:all`,
+		];
+
+		if (keysToDelete.length > 0) {
+			await redisClient.del(keysToDelete);
+		}
+
+		console.log(`Cache invalidated for product ${productId}`);
+	} catch (redisErr) {
+		console.warn(
+			`Redis cache invalidation failed for product ${productId}:`,
+			redisErr.message
+		);
+	}
+};
+
 // UPDATE ORDER STATUS (WITH CACHE INVALIDATION)
 exports.updateOrderStatusService = async (
 	orderId,
@@ -163,8 +250,21 @@ exports.updateOrderStatusService = async (
 	if (newStatus === "shipped" && trackingNumber) {
 		order.trackingNumber = trackingNumber;
 	}
-	if (newStatus === "delivered" || newStatus === "paid") {
+	if (newStatus === "delivered") {
 		order.paymentStatus = "Paid"; // auto-mark COD as paid when delivered
+
+		// Update stock and sold counts for each item in the order
+		for (const item of order.items) {
+			const productId = item.productId || item.orderProductId;
+			if (productId) {
+				await updateProductStock(productId, item.optionId, item.quantity);
+			} else {
+				console.error("Product ID not found for an item in order:", order._id);
+			}
+		}
+	}
+	if (newStatus === "paid") {
+		order.paymentStatus = "Paid";
 	}
 
 	const updated = await order.save();

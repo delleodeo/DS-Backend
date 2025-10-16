@@ -64,24 +64,31 @@ exports.updateCartItemService = async (userId, item) => {
 };
 
 exports.removeCartItemService = async (userId, productId, optionId) => {
-  console.log("Removing item: START")
-  console.log(JSON.stringify({productId, optionId }));
-  const cart = await Cart.findOne({ userId });
-  if (!cart) throw new Error("Cart not found");
+	console.log("Removing item: START");
+	console.log(JSON.stringify({ productId, optionId }));
+	const cart = await Cart.findOne({ userId });
+	if (!cart) throw new Error("Cart not found");
 
-  cart.items = cart.items.filter(
-    (i) =>
-      !(
-        i.productId.equals(productId) && String(i.optionId) === String(optionId)
-      )
-  );
+	cart.items = cart.items.filter((item) => {
+		const isProductMatch = item.productId.equals(productId);
+		const isOptionMatch =
+			// Both have no optionId
+			(!item.optionId && !optionId) ||
+			// Both have an optionId and they are the same
+			(item.optionId &&
+				optionId &&
+				String(item.optionId) === String(optionId));
 
-  cart.updatedAt = new Date();
-  await cart.save();
-  await redisClient.set(getCacheKey(userId), JSON.stringify(cart));
-  console.log("Removing item: END")
-  console.log(JSON.stringify({productId, optionId }));
-  return cart;
+		// We want to keep items that DON'T match
+		return !(isProductMatch && isOptionMatch);
+	});
+
+	cart.updatedAt = new Date();
+	await cart.save();
+	await redisClient.del(getCacheKey(userId));
+	console.log("Removing item: END");
+	console.log(JSON.stringify({ productId, optionId }));
+	return cart;
 };
 
 exports.clearCartService = async (userId) => {
