@@ -3,11 +3,107 @@ const redisClient = require("../../config/redis");
 const Admin = require("../admin/admin.model.js");
 const { emitAgreementMessage } = require("../../config/socket");
 const Product = require("../products/products.model");
+const Vendor = require("../vendors/vendors.model");
 
 const getUserOrdersKey = (userId) => `orders:user:${userId}`;
 const getVendorOrdersKey = (vendorId) => `orders:vendor:${vendorId}`;
 const getProductOrdersKey = (productId) => `orders:product:${productId}`;
 const getOrderKey = (id) => `orders:${id}`;
+
+// Helper function to update vendor revenue - pushes directly to monthlyRevenueComparison
+const updateVendorRevenue = async (vendorId, orderAmount) => {
+	try {
+		console.log(`\n🔵 [REVENUE TRACKING] Starting update for vendor: ${vendorId}, amount: ${orderAmount}`);
+		
+		// Try finding vendor by _id first, then by userId
+		let vendor = await Vendor.findById(vendorId);
+		if (!vendor) {
+			vendor = await Vendor.findOne({ userId: vendorId });
+		}
+		
+		if (!vendor) {
+			console.error(`❌ [REVENUE TRACKING] Vendor not found with ID: ${vendorId}`);
+			return;
+		}
+
+		console.log(`✅ [REVENUE TRACKING] Vendor found: ${vendor.storeName} (ID: ${vendor._id})`);
+
+		const currentDate = new Date();
+		const currentYear = currentDate.getFullYear();
+		const monthNames = [
+			"January", "February", "March", "April", "May", "June",
+			"July", "August", "September", "October", "November", "December"
+		];
+		const currentMonth = monthNames[currentDate.getMonth()];
+
+		console.log(`📅 [REVENUE TRACKING] Current date: ${currentMonth} ${currentYear}`);
+
+		// Find if the current year exists in monthlyRevenueComparison
+		const yearIndex = vendor.monthlyRevenueComparison.findIndex(
+			(data) => data.year === currentYear
+		);
+
+		let previousRevenue = 0;
+		if (yearIndex !== -1) {
+			// Year exists, add to the current month's revenue
+			previousRevenue = vendor.monthlyRevenueComparison[yearIndex].revenues[currentMonth] || 0;
+			vendor.monthlyRevenueComparison[yearIndex].revenues[currentMonth] = previousRevenue + orderAmount;
+			console.log(`📊 [REVENUE TRACKING] Updated existing year ${currentYear}: ${currentMonth} ${previousRevenue} → ${vendor.monthlyRevenueComparison[yearIndex].revenues[currentMonth]}`);
+		} else {
+			// Year doesn't exist, create new year entry
+			const newYearData = {
+				year: currentYear,
+				revenues: {
+					January: 0,
+					February: 0,
+					March: 0,
+					April: 0,
+					May: 0,
+					June: 0,
+					July: 0,
+					August: 0,
+					September: 0,
+					October: 0,
+					November: 0,
+					December: 0,
+					[currentMonth]: orderAmount
+				}
+			};
+			vendor.monthlyRevenueComparison.push(newYearData);
+			console.log(`📊 [REVENUE TRACKING] Created new year ${currentYear}: ${currentMonth} = ${orderAmount}`);
+		}
+
+		// Update current month revenue (for reference)
+		const oldCurrentMonthly = vendor.currentMonthlyRevenue || 0;
+		vendor.currentMonthlyRevenue = oldCurrentMonthly + orderAmount;
+		
+		// Update total revenue
+		const oldTotalRevenue = vendor.totalRevenue || 0;
+		vendor.totalRevenue = oldTotalRevenue + orderAmount;
+		
+		// Update total orders count
+		const oldTotalOrders = vendor.totalOrders || 0;
+		vendor.totalOrders = oldTotalOrders + 1;
+
+		console.log(`💰 [REVENUE TRACKING] Stats update:
+		   - Current Monthly: ${oldCurrentMonthly} → ${vendor.currentMonthlyRevenue}
+		   - Total Revenue: ${oldTotalRevenue} → ${vendor.totalRevenue}
+		   - Total Orders: ${oldTotalOrders} → ${vendor.totalOrders}`);
+
+		await vendor.save();
+
+		// Clear vendor cache
+		await redisClient.del(`vendor:${vendorId}`);
+		await redisClient.del(`vendor:${vendor._id}`);
+
+		console.log(`✅ [REVENUE TRACKING] Successfully saved! Revenue added: +${orderAmount} to ${currentMonth} ${currentYear}`);
+		console.log(`📈 [REVENUE TRACKING] monthlyRevenueComparison updated for vendor ${vendor.storeName}\n`);
+	} catch (error) {
+		console.error(`❌ [REVENUE TRACKING] Error updating vendor revenue:`, error.message);
+		console.error(error.stack);
+		// Don't throw error to prevent order completion failure
+	}
+};
 
 // CREATE ORDER
 exports.createOrderService = async (orderData) => {
@@ -251,6 +347,13 @@ exports.updateOrderStatusService = async (
 		order.trackingNumber = trackingNumber;
 	}
 	if (newStatus === "delivered") {
+		// Calculate total amount (subTotal + shippingFee)
+		const orderTotal = (order.subTotal || 0) + (order.shippingFee || 0);
+		
+		console.log(`\n📦 [ORDER DELIVERED] Order ${order._id} marked as delivered`);
+		console.log(`   Vendor ID: ${order.vendorId}`);
+		console.log(`   SubTotal: ${order.subTotal}, Shipping: ${order.shippingFee}, Total: ${orderTotal}`);
+		
 		order.paymentStatus = "Paid"; // auto-mark COD as paid when delivered
 
 		// Update stock and sold counts for each item in the order
@@ -261,6 +364,15 @@ exports.updateOrderStatusService = async (
 			} else {
 				console.error("Product ID not found for an item in order:", order._id);
 			}
+		}
+
+		// Update vendor revenue when order is delivered
+		if (order.vendorId && orderTotal > 0) {
+			console.log(`🚀 [ORDER DELIVERED] Triggering revenue update...`);
+			await updateVendorRevenue(order.vendorId, orderTotal);
+		} else {
+			console.warn(`⚠️ [ORDER DELIVERED] Missing vendorId or total - Revenue not updated!`);
+			console.warn(`   vendorId: ${order.vendorId}, orderTotal: ${orderTotal}`);
 		}
 	}
 	if (newStatus === "paid") {

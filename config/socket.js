@@ -66,6 +66,95 @@ function initSocket(server) {
     socket.on('ping', () => {
       socket.emit('pong');
     });
+
+    // ==================== MESSAGING EVENTS ====================
+    
+    // Join conversation room
+    socket.on('join_conversation', (conversationId) => {
+      console.log(`💬 [SOCKET] Socket ${socket.id} joined conversation: ${conversationId}`);
+      socket.join(`conversation_${conversationId}`);
+      socket.emit('joined_conversation', { conversationId });
+    });
+
+    // Leave conversation room
+    socket.on('leave_conversation', (conversationId) => {
+      console.log(`💬 [SOCKET] Socket ${socket.id} left conversation: ${conversationId}`);
+      socket.leave(`conversation_${conversationId}`);
+      socket.emit('left_conversation', { conversationId });
+    });
+
+    // Send message via Socket.IO (real-time)
+    socket.on('send_message', async (data) => {
+      try {
+        const messageService = require('../modules/messages/message.service');
+        
+        console.log(`💬 [SOCKET] Sending message in conversation ${data.conversationId}`);
+        
+        // Send message through service
+        const message = await messageService.sendMessageService({
+          conversationId: data.conversationId,
+          senderId: data.senderId,
+          senderType: data.senderType,
+          content: data.content,
+          messageType: data.messageType || 'text',
+          imageUrl: data.imageUrl,
+          referenceId: data.referenceId,
+          referenceType: data.referenceType
+        });
+
+        // Emit to all users in conversation room
+        io.to(`conversation_${data.conversationId}`).emit('new_message', message);
+        
+        // Emit to sender confirmation
+        socket.emit('message_sent', { success: true, message });
+
+        console.log(`✅ [SOCKET] Message sent successfully: ${message._id}`);
+      } catch (error) {
+        console.error(`❌ [SOCKET] Error sending message:`, error);
+        socket.emit('message_error', { error: error.message });
+      }
+    });
+
+    // Typing indicator
+    socket.on('typing_start', (data) => {
+      console.log(`💬 [SOCKET] User typing in conversation ${data.conversationId}`);
+      socket.to(`conversation_${data.conversationId}`).emit('user_typing', {
+        conversationId: data.conversationId,
+        userId: data.userId,
+        userName: data.userName
+      });
+    });
+
+    socket.on('typing_stop', (data) => {
+      console.log(`💬 [SOCKET] User stopped typing in conversation ${data.conversationId}`);
+      socket.to(`conversation_${data.conversationId}`).emit('user_stopped_typing', {
+        conversationId: data.conversationId,
+        userId: data.userId
+      });
+    });
+
+    // Mark messages as read (real-time notification)
+    socket.on('mark_read', async (data) => {
+      try {
+        const messageService = require('../modules/messages/message.service');
+        
+        await messageService.markMessagesAsReadService(
+          data.conversationId,
+          data.userId,
+          data.userType
+        );
+
+        // Notify other user that messages were read
+        socket.to(`conversation_${data.conversationId}`).emit('messages_read', {
+          conversationId: data.conversationId,
+          readBy: data.userId
+        });
+
+        console.log(`✅ [SOCKET] Messages marked as read in conversation ${data.conversationId}`);
+      } catch (error) {
+        console.error(`❌ [SOCKET] Error marking messages as read:`, error);
+      }
+    });
   });
 
   console.log('Socket.IO server initialized successfully');
@@ -119,9 +208,36 @@ function broadcastToAll(eventName, data) {
   }
 }
 
+// Function to emit new message to conversation
+function emitNewMessage(conversationId, messageData) {
+  try {
+    if (io) {
+      const roomName = `conversation_${conversationId}`;
+      io.to(roomName).emit('new_message', messageData);
+      console.log(`💬 Emitted new message to conversation ${conversationId}`);
+    }
+  } catch (error) {
+    console.error('❌ Error emitting new message:', error);
+  }
+}
+
+// Function to emit unread count update to user
+function emitUnreadCountUpdate(userId, unreadData) {
+  try {
+    if (io) {
+      io.to(`user_${userId}`).emit('unread_count_update', unreadData);
+      console.log(`📬 Emitted unread count update to user ${userId}`);
+    }
+  } catch (error) {
+    console.error('❌ Error emitting unread count:', error);
+  }
+}
+
 module.exports = {
   initSocket,
   getIO,
   emitAgreementMessage,
-  broadcastToAll
+  broadcastToAll,
+  emitNewMessage,
+  emitUnreadCountUpdate
 };

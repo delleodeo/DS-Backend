@@ -1,0 +1,144 @@
+{
+  "info": {
+    "name": "DoroShop - Monthly Revenue Tracking API",
+    "description": "API collection for testing monthly revenue tracking endpoints",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Vendor Endpoints",
+      "item": [
+        {
+          "name": "Record Monthly Revenue (Individual)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{vendor_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/vendors/record-monthly-revenue",
+              "host": ["{{base_url}}"],
+              "path": ["api", "vendors", "record-monthly-revenue"]
+            },
+            "description": "Records the current month's revenue for the authenticated vendor and resets currentMonthlyRevenue to 0."
+          },
+          "response": [
+            {
+              "name": "Success Response",
+              "originalRequest": {
+                "method": "POST",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/api/vendors/record-monthly-revenue",
+                  "host": ["{{base_url}}"],
+                  "path": ["api", "vendors", "record-monthly-revenue"]
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [],
+              "cookie": [],
+              "body": "{\n  \"success\": true,\n  \"message\": \"Revenue for November 2025 recorded and reset successfully\",\n  \"recordedRevenue\": 0,\n  \"data\": [\n    {\n      \"year\": 2025,\n      \"revenues\": {\n        \"January\": 50000,\n        \"February\": 60000,\n        \"March\": 55000,\n        \"April\": 58000,\n        \"May\": 62000,\n        \"June\": 65000,\n        \"July\": 68000,\n        \"August\": 70000,\n        \"September\": 72000,\n        \"October\": 75000,\n        \"November\": 20000,\n        \"December\": 0\n      }\n    }\n  ]\n}"
+            }
+          ]
+        },
+        {
+          "name": "Get Vendor Details",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{vendor_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/vendors",
+              "host": ["{{base_url}}"],
+              "path": ["api", "vendors"]
+            },
+            "description": "Get vendor details including monthly revenue data"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Admin Endpoints",
+      "item": [
+        {
+          "name": "Batch Record Monthly Revenue (All Vendors)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{admin_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/vendors/batch-record-monthly-revenue",
+              "host": ["{{base_url}}"],
+              "path": ["api", "vendors", "batch-record-monthly-revenue"]
+            },
+            "description": "Records monthly revenue for ALL vendors in the system. Admin only."
+          },
+          "response": [
+            {
+              "name": "Success Response",
+              "originalRequest": {
+                "method": "POST",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/api/vendors/batch-record-monthly-revenue",
+                  "host": ["{{base_url}}"],
+                  "path": ["api", "vendors", "batch-record-monthly-revenue"]
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [],
+              "cookie": [],
+              "body": "{\n  \"success\": true,\n  \"message\": \"Batch monthly revenue recording completed\",\n  \"totalVendors\": 50,\n  \"successCount\": 48,\n  \"failedCount\": 2,\n  \"details\": {\n    \"success\": [\n      \"507f1f77bcf86cd799439011\",\n      \"507f1f77bcf86cd799439012\"\n    ],\n    \"failed\": [\n      {\n        \"userId\": \"507f1f77bcf86cd799439014\",\n        \"error\": \"Vendor not found\"\n      }\n    ]\n  }\n}"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:3002",
+      "type": "string"
+    },
+    {
+      "key": "vendor_token",
+      "value": "YOUR_VENDOR_TOKEN_HERE",
+      "type": "string"
+    },
+    {
+      "key": "admin_token",
+      "value": "YOUR_ADMIN_TOKEN_HERE",
+      "type": "string"
+    }
+  ]
+}

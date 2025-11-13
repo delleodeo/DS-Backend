@@ -179,3 +179,154 @@ exports.incrementProductClicks = async (userId) => {
 			EX: 3600,
 		});
 };
+
+/**
+ * Push monthly revenue to monthlyRevenueComparison at the end of each month
+ * @param {String} userId - The vendor's user ID
+ * @param {Number} revenueAmount - The total revenue for the month
+ * @param {Number} year - The year (optional, defaults to current year)
+ * @param {String} month - The month name (optional, defaults to current month)
+ * @returns {Object} Updated vendor document
+ */
+exports.pushMonthlyRevenue = async (userId, revenueAmount, year = null, month = null) => {
+	try {
+		const currentDate = new Date();
+		const targetYear = year || currentDate.getFullYear();
+		const monthNames = [
+			"January", "February", "March", "April", "May", "June",
+			"July", "August", "September", "October", "November", "December"
+		];
+		const targetMonth = month || monthNames[currentDate.getMonth()];
+
+		// Find the vendor
+		const vendor = await Vendor.findOne({ userId });
+		if (!vendor) {
+			throw new Error("Vendor not found");
+		}
+
+		// Find if the year already exists in monthlyRevenueComparison
+		const yearIndex = vendor.monthlyRevenueComparison.findIndex(
+			(data) => data.year === targetYear
+		);
+
+		if (yearIndex !== -1) {
+			// Year exists, update the specific month
+			vendor.monthlyRevenueComparison[yearIndex].revenues[targetMonth] = revenueAmount;
+		} else {
+			// Year doesn't exist, create new year entry
+			const newYearData = {
+				year: targetYear,
+				revenues: {
+					January: 0,
+					February: 0,
+					March: 0,
+					April: 0,
+					May: 0,
+					June: 0,
+					July: 0,
+					August: 0,
+					September: 0,
+					October: 0,
+					November: 0,
+					December: 0,
+					[targetMonth]: revenueAmount
+				}
+			};
+			vendor.monthlyRevenueComparison.push(newYearData);
+		}
+
+		// Save the updated vendor
+		await vendor.save();
+
+		// Clear cache
+		await redisClient.del(getVendorCacheKey(userId));
+
+		return {
+			success: true,
+			message: `Revenue for ${targetMonth} ${targetYear} updated successfully`,
+			data: vendor.monthlyRevenueComparison
+		};
+	} catch (error) {
+		console.error("Push Monthly Revenue Error:", error);
+		throw error;
+	}
+};
+
+/**
+ * Reset current month's revenue (use at start of new month if needed)
+ * Note: Revenue is now pushed to monthlyRevenueComparison immediately on each sale
+ * @param {String} userId - The vendor's user ID
+ * @returns {Object} Updated vendor document
+ */
+exports.resetCurrentMonthRevenue = async (userId) => {
+	try {
+		const vendor = await Vendor.findOne({ userId });
+		if (!vendor) {
+			throw new Error("Vendor not found");
+		}
+
+		const currentDate = new Date();
+		const currentYear = currentDate.getFullYear();
+		const monthNames = [
+			"January", "February", "March", "April", "May", "June",
+			"July", "August", "September", "October", "November", "December"
+		];
+		const currentMonth = monthNames[currentDate.getMonth()];
+
+		// Reset currentMonthlyRevenue to 0 for the new month
+		vendor.currentMonthlyRevenue = 0;
+		await vendor.save();
+
+		// Clear cache
+		await redisClient.del(getVendorCacheKey(userId));
+
+		return {
+			success: true,
+			message: `Current monthly revenue reset for ${currentMonth} ${currentYear}`,
+			data: vendor.monthlyRevenueComparison
+		};
+	} catch (error) {
+		console.error("Reset Current Month Revenue Error:", error);
+		throw error;
+	}
+};
+
+/**
+ * Batch reset all vendors' currentMonthlyRevenue at month start
+ * Optional: Use this with a cron job at the start of each month
+ * @returns {Object} Summary of processed vendors
+ */
+exports.batchResetMonthlyRevenue = async () => {
+	try {
+		const vendors = await Vendor.find({});
+		const results = {
+			success: [],
+			failed: []
+		};
+
+		for (const vendor of vendors) {
+			try {
+				await exports.resetCurrentMonthRevenue(vendor.userId);
+				results.success.push(vendor.userId);
+			} catch (error) {
+				console.error(`Failed to reset revenue for vendor ${vendor.userId}:`, error);
+				results.failed.push({
+					userId: vendor.userId,
+					error: error.message
+				});
+			}
+		}
+
+		return {
+			success: true,
+			message: "Batch monthly revenue reset completed",
+			totalVendors: vendors.length,
+			successCount: results.success.length,
+			failedCount: results.failed.length,
+			details: results
+		};
+	} catch (error) {
+		console.error("Batch Reset Monthly Revenue Error:", error);
+		throw error;
+	}
+};

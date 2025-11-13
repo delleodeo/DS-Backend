@@ -113,3 +113,29 @@ exports.trackProductClick = async (req, res) => {
 			.json({ error: err.message || "Failed to track product click" });
 	}
 };
+
+exports.resetMonthlyRevenue = async (req, res) => {
+	try {
+		const result = await vendorService.resetCurrentMonthRevenue(req.user.id);
+		res.status(200).json(result);
+	} catch (err) {
+		console.error("Reset Monthly Revenue Error:", err);
+		res.status(400).json({ 
+			success: false,
+			error: err.message || "Failed to reset monthly revenue" 
+		});
+	}
+};
+
+exports.batchResetMonthlyRevenue = async (req, res) => {
+	try {
+		const result = await vendorService.batchResetMonthlyRevenue();
+		res.status(200).json(result);
+	} catch (err) {
+		console.error("Batch Reset Monthly Revenue Error:", err);
+		res.status(500).json({ 
+			success: false,
+			error: err.message || "Failed to batch reset monthly revenue" 
+		});
+	}
+};
