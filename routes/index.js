@@ -3,6 +3,7 @@ const router = express.Router();
 const { protect, restrictTo } = require("../auth/auth.controller.js");
 
 const productRoutes = require("../modules/products/products.routes");
+const promotionRoutes = require("../modules/products/promotion.routes");
 const cartRoutes = require("../modules/cart/cart.routes");
 const orderRoutes = require("../modules/orders/orders.routes");
 const userRoutes = require("../modules/users/users.routes");
@@ -14,6 +15,7 @@ const messageRoutes = require("../modules/messages/message.routes");
 const socketTestRoutes = require("./socket-test");
 
 router.use("/products", productRoutes);
+router.use("/products", promotionRoutes);
 router.use("/cart", protect, cartRoutes);
 router.use("/order", orderRoutes);
 router.use("/user", userRoutes);

@@ -1,5 +1,17 @@
 const mongoose = require("mongoose");
 
+const PromotionSchema = new mongoose.Schema(
+	{
+		isActive: { type: Boolean, default: false },
+		discountType: { type: String, enum: ['percentage', 'fixed', 'none'], default: 'none' },
+		discountValue: { type: Number, default: 0, min: 0 },
+		startDate: { type: Date },
+		endDate: { type: Date },
+		freeShipping: { type: Boolean, default: false },
+	},
+	{ _id: false }
+);
+
 const OptionSchema = new mongoose.Schema(
 	{
 		imageUrl: String,
@@ -10,6 +22,7 @@ const OptionSchema = new mongoose.Schema(
 		sold: { type: Number, default: 0 },
 		createdAt: { type: Date, default: Date.now },
 		updatedAt: { type: Date, default: Date.now },
+		promotion: { type: PromotionSchema, default: () => ({}) },
 	},
 	{ _id: true }
 );
@@ -48,6 +61,7 @@ const ProductSchema = new mongoose.Schema({
 	numReviews: { type: Number, default: 0, min: 0 },
 	createdAt: { type: Date, default: Date.now },
 	municipality: { type: String, required: true },
+	promotion: { type: PromotionSchema, default: () => ({}) },
 });
 
 module.exports = mongoose.model("Product", ProductSchema);

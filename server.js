@@ -7,6 +7,7 @@ const { resetAllNew } = require("./modules/admin/resetAllNew");
 const { initSocket } = require("./config/socket");
 const { startMonthlyRevenueCron } = require("./utils/monthlyRevenueCron");
 const { startImageCleanupCron } = require("./utils/imageCleanupCron");
+const { startPromotionExpirationCron } = require("./utils/promotionExpirationCron");
 const http = require('http');
 
 resetAllNew();
@@ -35,6 +36,9 @@ const startServer = async () => {
     
     // Start image cleanup cron job
     startImageCleanupCron();
+    
+    // Start promotion expiration cron job
+    startPromotionExpirationCron();
 
     // Export server and io for potential use in other modules
     module.exports = { app, server, io };
