@@ -9,6 +9,7 @@ const Product = require("./products.model.js");
 const Admin = require("../admin/admin.model.js");
 const Vendor = require("../vendors/vendors.model.js");
 const { validateOptionPayload } = require("../../utils/validateOption.js");
+const { deleteBatchFromCloudinary, extractPublicIdFromUrl } = require("../upload/upload.service.js");
 const redisKey = "products:all";
 const mongoose = require("mongoose");
 
@@ -93,6 +94,10 @@ async function getPaginatedProducts(skip, limit) {
 
 async function createProductService(data) {
   const newProduct = new Product(data);
+  
+  // Ensure product has at least one main image
+  ensureMainImage(newProduct);
+  
   await newProduct.save();
 
   await Admin.updateOne({}, { $inc: { totalProducts: 1 } });
@@ -342,17 +347,54 @@ async function getProductByIdService(id) {
 }
 
 // update
+/**
+ * Ensure product has at least one main image.
+ * If imageUrls is empty but product has options with images,
+ * use the first option's image as the main image.
+ * @param {Object} product - Product document
+ * @returns {boolean} - Whether the product was modified
+ */
+function ensureMainImage(product) {
+  // Check if product has no main images
+  if (!product.imageUrls || product.imageUrls.length === 0) {
+    // Check if product has options with images
+    if (product.option && product.option.length > 0) {
+      // Find first option with an image
+      const optionWithImage = product.option.find(opt => opt.imageUrl);
+      
+      if (optionWithImage) {
+        console.log(`[Product Image Auto-Replace] No main images found for product ${product._id}, using option image: ${optionWithImage.imageUrl}`);
+        product.imageUrls = [optionWithImage.imageUrl];
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 async function updateProductService(id, data) {
   const PRODUCT_BY_ID_KEY = `products:${id}`;
   if (redisClient && redisClient.isOpen) {
     await redisClient.del(PRODUCT_BY_ID_KEY).catch(() => {});
   }
-  const updatedProduct = await Product.findByIdAndUpdate(id, data, {
+  
+  let updatedProduct = await Product.findByIdAndUpdate(id, data, {
     new: true,
     runValidators: true,
-  }).lean();
+  });
 
   if (!updatedProduct) return null;
+
+  // Check if we need to auto-replace main image with option image
+  const wasModified = ensureMainImage(updatedProduct);
+  
+  if (wasModified) {
+    // Save the changes if main image was auto-replaced
+    await updatedProduct.save();
+  }
+  
+  // Convert to plain object
+  updatedProduct = updatedProduct.toObject();
 
   await invalidateAllProductCaches();
 
@@ -423,14 +465,81 @@ async function addProductStockMain(productId, addition) {
 async function deleteProductService(id) {
   const PRODUCT_BY_ID_KEY = `products:${id}`;
 
+  // First, fetch the product to get image URLs
+  const product = await Product.findById(id);
+  if (!product) return null;
+
+  console.log(`[Product Delete] Starting deletion for product ${id}`);
+
+  // Collect all image URLs from product and variants
+  const imageUrls = [];
+  
+  // Add main product images
+  if (product.imageUrls && Array.isArray(product.imageUrls)) {
+    console.log(`[Product Delete] Found ${product.imageUrls.length} main product images`);
+    imageUrls.push(...product.imageUrls);
+  }
+  
+  // Add variant images
+  if (product.option && Array.isArray(product.option)) {
+    const variantImagesCount = product.option.filter(v => v.imageUrl).length;
+    console.log(`[Product Delete] Found ${variantImagesCount} variant images from ${product.option.length} variants`);
+    product.option.forEach(variant => {
+      if (variant.imageUrl) {
+        imageUrls.push(variant.imageUrl);
+      }
+    });
+  }
+
+  console.log(`[Product Delete] Total image URLs to process: ${imageUrls.length}`);
+  if (imageUrls.length > 0) {
+    console.log(`[Product Delete] Image URLs:`, imageUrls);
+  }
+
+  // Extract public IDs from Cloudinary URLs
+  const publicIds = imageUrls
+    .map(url => {
+      const publicId = extractPublicIdFromUrl(url);
+      if (!publicId) {
+        console.warn(`[Product Delete] Failed to extract public_id from URL: ${url}`);
+      }
+      return publicId;
+    })
+    .filter(id => id !== null);
+
+  console.log(`[Product Delete] Extracted ${publicIds.length} public IDs:`, publicIds);
+
+  // Delete images from Cloudinary
+  if (publicIds.length > 0) {
+    try {
+      const deleteResult = await deleteBatchFromCloudinary(publicIds);
+      console.log(`[Product Delete] Cloudinary deletion result: ${deleteResult.successful}/${deleteResult.total} images deleted successfully`);
+      
+      if (deleteResult.failed > 0) {
+        console.error(`[Product Delete] Failed to delete ${deleteResult.failed} images from Cloudinary`);
+        console.error('[Product Delete] Deletion details:', JSON.stringify(deleteResult.details, null, 2));
+      }
+    } catch (error) {
+      console.error(`[Product Delete] Exception during Cloudinary deletion:`, error);
+      // Continue with product deletion even if Cloudinary deletion fails
+    }
+  } else {
+    console.log(`[Product Delete] No Cloudinary images to delete`);
+  }
+
+  // Delete product from database
   const deletedProduct = await Product.findByIdAndDelete(id);
   if (!deletedProduct) return null;
 
   await Admin.updateOne({}, { $inc: { totalProducts: -1 } });
 
-  await redisClient.del(PRODUCT_BY_ID_KEY);
+  if (redisClient && redisClient.isOpen) {
+    await redisClient.del(PRODUCT_BY_ID_KEY).catch(() => {});
+  }
 
   await invalidateAllProductCaches();
+
+  console.log(`[Product Delete] Successfully deleted product ${id} from database`);
 
   return true;
 }
@@ -440,12 +549,46 @@ async function removeVariant(productId, variantId) {
     const product = await Product.findById(productId);
     if (!product) return null;
 
+    // Find the variant to be removed to get its image URL
+    const variantToRemove = product.option.find(
+      (opt) => opt._id.toString() === variantId
+    );
+
     if (product.option.length <= 1) {
+      // If only one variant exists, delete the entire product
+      // This will trigger deleteProductService logic that handles Cloudinary cleanup
       await Product.findByIdAndDelete(productId);
       if (redisClient && redisClient.isOpen) {
         await redisClient.del(`products:${productId}`).catch(() => {});
       }
       await invalidateAllProductCaches();
+      
+      // Delete all product images from Cloudinary
+      const imageUrls = [];
+      if (product.imageUrls && Array.isArray(product.imageUrls)) {
+        imageUrls.push(...product.imageUrls);
+      }
+      if (product.option && Array.isArray(product.option)) {
+        product.option.forEach(variant => {
+          if (variant.imageUrl) {
+            imageUrls.push(variant.imageUrl);
+          }
+        });
+      }
+      
+      const publicIds = imageUrls
+        .map(url => extractPublicIdFromUrl(url))
+        .filter(id => id !== null);
+      
+      if (publicIds.length > 0) {
+        try {
+          const deleteResult = await deleteBatchFromCloudinary(publicIds);
+          console.log(`[Variant Delete] Deleted ${deleteResult.successful}/${deleteResult.total} images from Cloudinary for product ${productId}`);
+        } catch (error) {
+          console.error(`[Variant Delete] Failed to delete images from Cloudinary:`, error);
+        }
+      }
+      
       return {
         deleted: true,
         message: "Product deleted since only one variant existed.",
@@ -453,6 +596,21 @@ async function removeVariant(productId, variantId) {
     }
 
     const initialLength = product.option.length;
+
+    // Delete variant's image from Cloudinary before removing from database
+    if (variantToRemove && variantToRemove.imageUrl) {
+      const publicId = extractPublicIdFromUrl(variantToRemove.imageUrl);
+      if (publicId) {
+        try {
+          const { deleteBatchFromCloudinary } = require("../upload/upload.service.js");
+          const deleteResult = await deleteBatchFromCloudinary([publicId]);
+          console.log(`[Variant Delete] Deleted variant image from Cloudinary: ${publicId}`);
+        } catch (error) {
+          console.error(`[Variant Delete] Failed to delete variant image from Cloudinary:`, error);
+          // Continue with variant removal even if Cloudinary deletion fails
+        }
+      }
+    }
 
     product.option = product.option.filter(
       (opt) => opt._id.toString() !== variantId
@@ -462,6 +620,24 @@ async function removeVariant(productId, variantId) {
       // No variant was removed (variantId not found)
       return null;
     }
+
+    // Check if the deleted variant's image was used as main image
+    // If so, replace it with another option's image
+    if (variantToRemove && variantToRemove.imageUrl) {
+      const variantImageUsedAsMain = product.imageUrls && 
+        product.imageUrls.includes(variantToRemove.imageUrl);
+      
+      if (variantImageUsedAsMain) {
+        console.log(`[Variant Delete] Removed variant image was used as main image, replacing...`);
+        // Remove the deleted variant's image from main images
+        product.imageUrls = product.imageUrls.filter(
+          url => url !== variantToRemove.imageUrl
+        );
+      }
+    }
+
+    // Ensure product has at least one main image
+    ensureMainImage(product);
 
     await product.save();
     if (redisClient && redisClient.isOpen) {
@@ -529,6 +705,9 @@ async function addSingleOption(productId, optionData) {
   product.sold = product.option.reduce((sum, o) => sum + (o.sold || 0), 0);
   product.isOption = product.option.length > 0;
 
+  // Ensure product has at least one main image
+  ensureMainImage(product);
+
   await product.save();
   await invalidateAllProductCaches();
   return product;
@@ -550,4 +729,5 @@ module.exports = {
   removeVariant,
   addProductStock,
   addProductStockMain,
+  ensureMainImage,
 };
