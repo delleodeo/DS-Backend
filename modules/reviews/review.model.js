@@ -4,7 +4,7 @@ const ReviewSchema = new mongoose.Schema({
 	// References
 	productId: {
 		type: mongoose.Schema.Types.ObjectId,
-		ref: "Products",
+		ref: "Product",
 		required: true,
 		index: true
 	},

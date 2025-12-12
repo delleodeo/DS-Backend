@@ -1,7 +1,11 @@
 const Review = require("./review.model");
 const Order = require("../orders/orders.model");
 const Product = require("../products/products.model");
-const redisClient = require("../../config/redis");
+const {
+	getRedisClient,
+	isRedisAvailable,
+} = require("../../config/redis");
+const redisClient = getRedisClient();
 
 // Helper function to update product rating
 const updateProductRating = async (productId) => {
@@ -25,8 +29,10 @@ const updateProductRating = async (productId) => {
 		});
 
 		// Clear product cache
-		await redisClient.del(`product:${productId}`);
-		await redisClient.del(`products:*`);
+		if (isRedisAvailable()) {
+			await redisClient.del(`product:${productId}`).catch(() => {});
+			await redisClient.del(`products:*`).catch(() => {});
+		}
 
 		return { averageRating: parseFloat(averageRating.toFixed(2)), numReviews: reviews.length };
 	} catch (error) {
@@ -122,13 +128,15 @@ exports.createReviewService = async (reviewData) => {
 		await updateProductRating(productId);
 
 		// Clear caches
-		await Promise.all([
-			redisClient.del(`reviews:product:${productId}`),
-			redisClient.del(`reviews:user:${userId}`),
-			redisClient.del(`reviews:vendor:${vendorId}`)
-		]);
+		if (isRedisAvailable()) {
+			await Promise.all([
+				redisClient.del(`reviews:product:${productId}`).catch(() => {}),
+				redisClient.del(`reviews:user:${userId}`).catch(() => {}),
+				redisClient.del(`reviews:vendor:${vendorId}`).catch(() => {})
+			]);
+		}
 
-		console.log(`✅ [REVIEW] Review created for product ${productId} by user ${userId}`);
+		console.log(`✅ [REVIEW] Review created for product ${productId} by user ${userId}`)
 
 		return savedReview.toObject();
 	} catch (error) {
@@ -251,13 +259,15 @@ exports.updateReviewService = async (reviewId, userId, updateData) => {
 		await updateProductRating(review.productId);
 
 		// Clear caches
-		await Promise.all([
-			redisClient.del(`reviews:product:${review.productId}`),
-			redisClient.del(`reviews:user:${userId}`),
-			redisClient.del(`reviews:vendor:${review.vendorId}`)
-		]);
+		if (isRedisAvailable()) {
+			await Promise.all([
+				redisClient.del(`reviews:product:${review.productId}`).catch(() => {}),
+				redisClient.del(`reviews:user:${userId}`).catch(() => {}),
+				redisClient.del(`reviews:vendor:${review.vendorId}`).catch(() => {})
+			]);
+		}
 
-		console.log(`✅ [REVIEW] Review ${reviewId} updated by user ${userId}`);
+		console.log(`✅ [REVIEW] Review ${reviewId} updated by user ${userId}`)
 
 		return updatedReview.toObject();
 	} catch (error) {
@@ -288,13 +298,15 @@ exports.deleteReviewService = async (reviewId, userId) => {
 		await updateProductRating(productId);
 
 		// Clear caches
-		await Promise.all([
-			redisClient.del(`reviews:product:${productId}`),
-			redisClient.del(`reviews:user:${userId}`),
-			redisClient.del(`reviews:vendor:${vendorId}`)
-		]);
+		if (isRedisAvailable()) {
+			await Promise.all([
+				redisClient.del(`reviews:product:${productId}`).catch(() => {}),
+				redisClient.del(`reviews:user:${userId}`).catch(() => {}),
+				redisClient.del(`reviews:vendor:${vendorId}`).catch(() => {})
+			]);
+		}
 
-		console.log(`✅ [REVIEW] Review ${reviewId} deleted by user ${userId}`);
+		console.log(`✅ [REVIEW] Review ${reviewId} deleted by user ${userId}`)
 
 		return { message: "Review deleted successfully" };
 	} catch (error) {
@@ -324,8 +336,10 @@ exports.addVendorResponseService = async (reviewId, vendorId, responseComment) =
 		const updatedReview = await review.save();
 
 		// Clear caches
-		await redisClient.del(`reviews:product:${review.productId}`);
-		await redisClient.del(`reviews:vendor:${vendorId}`);
+		if (isRedisAvailable()) {
+			await redisClient.del(`reviews:product:${review.productId}`).catch(() => {});
+			await redisClient.del(`reviews:vendor:${vendorId}`).catch(() => {});
+		}
 
 		console.log(`✅ [REVIEW] Vendor ${vendorId} responded to review ${reviewId}`);
 
@@ -364,7 +378,9 @@ exports.markReviewHelpfulService = async (reviewId, userId) => {
 		const updatedReview = await review.save();
 
 		// Clear cache
-		await redisClient.del(`reviews:product:${review.productId}`);
+		if (isRedisAvailable()) {
+			await redisClient.del(`reviews:product:${review.productId}`).catch(() => {});
+		}
 
 		return {
 			reviewId,

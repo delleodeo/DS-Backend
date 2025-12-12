@@ -1,7 +1,11 @@
 const bcrypt = require("bcryptjs");
 const User = require("./users.model");
 const Admin = require("../admin/admin.model.js");
-const redisClient = require("../../config/redis");
+const {
+	getRedisClient,
+	isRedisAvailable,
+} = require("../../config/redis");
+const redisClient = getRedisClient();
 const { createToken, verifyToken } = require("../../auth/token.js");
 
 const getUserCacheKey = (id) => `user:profile:${id}`;
@@ -17,12 +21,18 @@ exports.verifyAndRegister = async ({
 }) => {
 	const existing = await User.findOne({ email });
 	if (existing) throw { status: 400, message: "Email already registered" };
-	console.log(email)
-	const registration = await redisClient.get(userRedisOtpKey(email));
-	const parseOtpData = JSON.parse(registration);
-
-	if (!registration)
+	console.log(email);
+	
+	if (!isRedisAvailable()) {
+		throw { status: 503, message: "OTP service temporarily unavailable" };
+	}
+	
+	const registration = await redisClient.get(userRedisOtpKey(email)).catch(() => null);
+	if (!registration) {
 		throw { status: 400, message: "No OTP request found for this email" };
+	}
+	
+	const parseOtpData = JSON.parse(registration);
 
 	if (parseOtpData.otp !== otp || parseOtpData.otpExpiry < Date.now()) {
 		throw { status: 400, message: "Invalid or expired OTP" };
@@ -41,7 +51,9 @@ exports.verifyAndRegister = async ({
 
 	await Admin.updateOne({}, { $inc: { totalUsers: 1, newUsersCount: 1 } });
 
-	await redisClient.del(userRedisOtpKey(email));
+	if (isRedisAvailable()) {
+		await redisClient.del(userRedisOtpKey(email)).catch(() => {});
+	}
 
 	const token = createToken(user);
 
@@ -62,13 +74,18 @@ exports.loginUser = async ({ email, password }) => {
 
 exports.getUserById = async (id) => {
 	const cacheKey = getUserCacheKey(id);
-	const cached = await redisClient.get(cacheKey);
-	if (cached) return JSON.parse(cached);
+	
+	if (isRedisAvailable()) {
+		const cached = await redisClient.get(cacheKey).catch(() => null);
+		if (cached) return JSON.parse(cached);
+	}
 
 	const user = await User.findById(id).select("-password");
 	if (!user) throw new Error("User not found");
 
-	await redisClient.set(cacheKey, JSON.stringify(user), { EX: 600 });
+	if (isRedisAvailable()) {
+		await redisClient.set(cacheKey, JSON.stringify(user), { EX: 600 }).catch(() => {});
+	}
 	return user;
 };
 
@@ -81,7 +98,9 @@ exports.updateUser = async (id, updates) => {
 	if (!updated) throw new Error("Failed to update user");
 
 	const cacheKey = getUserCacheKey(id);
-	await redisClient.set(cacheKey, JSON.stringify(updated), { EX: 3600 });
+	if (isRedisAvailable()) {
+		await redisClient.set(cacheKey, JSON.stringify(updated), { EX: 3600 }).catch(() => {});
+	}
 
 	return updated;
 };
@@ -97,7 +116,9 @@ exports.deleteUser = async (id) => {
 			},
 		}
 	);
-	await redisClient.del(getUserCacheKey(id));
+	if (isRedisAvailable()) {
+		await redisClient.del(getUserCacheKey(id)).catch(() => {});
+	}
 };
 
 // continue by email or facebook

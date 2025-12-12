@@ -1,7 +1,11 @@
 const Cart = require("./cart.model");
 const Product = require("../products/products.model");
 const Vendor = require("../vendors/vendors.model.js");
-const redisClient = require("../../config/redis");
+const {
+	getRedisClient,
+	isRedisAvailable,
+} = require("../../config/redis");
+const redisClient = getRedisClient();
 const { json } = require("express");
 
 const getCacheKey = (userId) => `cart:${userId}`;
@@ -27,18 +31,22 @@ exports.addToCartService = async (userId, item) => {
   cart.updatedAt = new Date();
   await cart.save();
 
-  await redisClient.set(getCacheKey(userId), JSON.stringify(cart));
-  return cart;
+	if (isRedisAvailable()) {
+		await redisClient.set(getCacheKey(userId), JSON.stringify(cart)).catch(() => {});
+	}	return cart;
 };
-
 exports.getCartService = async (userId) => {
-  const cache = await redisClient.get(getCacheKey(userId));
-  if (cache) return JSON.parse(cache);
+	if (isRedisAvailable()) {
+		const cache = await redisClient.get(getCacheKey(userId)).catch(() => null);
+		if (cache) return JSON.parse(cache);
+	}
 
-  const cart = await Cart.findOne({ userId }).lean();
-  if (cart) await redisClient.set(getCacheKey(userId), JSON.stringify(cart));
-  console.log(cart);
-  return cart || { userId, items: [] };
+	const cart = await Cart.findOne({ userId }).lean();
+	if (cart && isRedisAvailable()) {
+		await redisClient.set(getCacheKey(userId), JSON.stringify(cart)).catch(() => {});
+	}
+	console.log(cart);
+	return cart || { userId, items: [] };
 };
 
 exports.updateCartItemService = async (userId, item) => {
@@ -59,10 +67,10 @@ exports.updateCartItemService = async (userId, item) => {
 
   cart.updatedAt = new Date();
   await cart.save();
-  await redisClient.set(getCacheKey(userId), JSON.stringify(cart));
-  return cart;
+	if (isRedisAvailable()) {
+		await redisClient.set(getCacheKey(userId), JSON.stringify(cart)).catch(() => {});
+	}	return cart;
 };
-
 exports.removeCartItemService = async (userId, productId, optionId) => {
 	console.log("Removing item: START");
 	console.log(JSON.stringify({ productId, optionId }));
@@ -85,19 +93,23 @@ exports.removeCartItemService = async (userId, productId, optionId) => {
 
 	cart.updatedAt = new Date();
 	await cart.save();
-	await redisClient.del(getCacheKey(userId));
+	if (isRedisAvailable()) {
+		await redisClient.del(getCacheKey(userId)).catch(() => {});
+	}
 	console.log("Removing item: END");
 	console.log(JSON.stringify({ productId, optionId }));
 	return cart;
 };
 
 exports.clearCartService = async (userId) => {
-  const cart = await Cart.findOneAndUpdate(
-    { userId },
-    { items: [], updatedAt: new Date() },
-    { new: true }
-  );
+	const cart = await Cart.findOneAndUpdate(
+		{ userId },
+		{ items: [], updatedAt: new Date() },
+		{ new: true }
+	);
 
-  await redisClient.set(getCacheKey(userId), JSON.stringify(cart));
-  return cart;
+	if (isRedisAvailable()) {
+		await redisClient.set(getCacheKey(userId), JSON.stringify(cart)).catch(() => {});
+	}
+	return cart;
 };

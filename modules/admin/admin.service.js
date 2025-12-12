@@ -1,20 +1,28 @@
 // admin.service.js
 const Admin = require("./admin.model");
-const redisClient = require("../../config/redis");
+const {
+	getRedisClient,
+	isRedisAvailable,
+} = require("../../config/redis");
+const redisClient = getRedisClient();
 
 const ADMIN_CACHE_KEY = "admin:dashboard";
 
 exports.getDashboardData = async () => {
-  const cached = await redisClient.get(ADMIN_CACHE_KEY);
-  if (cached) return JSON.parse(cached);
+	if (isRedisAvailable()) {
+		const cached = await redisClient.get(ADMIN_CACHE_KEY).catch(() => null);
+		if (cached) return JSON.parse(cached);
+	}
 
-  let adminData = await Admin.findOne();
-  if (!adminData) {
-    adminData = await new Admin().save();
-  }
+	let adminData = await Admin.findOne();
+	if (!adminData) {
+		adminData = await new Admin().save();
+	}
 
-  await redisClient.set(ADMIN_CACHE_KEY, JSON.stringify(adminData), { EX: 600 });
-  return adminData;
+	if (isRedisAvailable()) {
+		await redisClient.set(ADMIN_CACHE_KEY, JSON.stringify(adminData), { EX: 600 }).catch(() => {});
+	}
+	return adminData;
 };
 
 exports.updateDashboardData = async (updates) => {
@@ -26,6 +34,8 @@ exports.updateDashboardData = async (updates) => {
 
   if (!updated) throw new Error("Failed to update admin dashboard");
 
-  await redisClient.set(ADMIN_CACHE_KEY, JSON.stringify(updated), { EX: 600 });
-  return updated;
+	if (isRedisAvailable()) {
+		await redisClient.set(ADMIN_CACHE_KEY, JSON.stringify(updated), { EX: 600 }).catch(() => {});
+	}
+	return updated;
 };

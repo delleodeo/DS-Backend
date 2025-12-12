@@ -1,6 +1,11 @@
 // vendor.service.js
 const Vendor = require("./vendors.model");
-const redisClient = require("../../config/redis");
+const {
+	getRedisClient,
+	isRedisAvailable,
+} = require("../../config/redis");
+
+const redisClient = getRedisClient();
 
 const getVendorCacheKey = (vendorId) => `vendor:${vendorId}`;
 const getVendorDetailsKey = (vendorId) => `vendor:details:${vendorId}`;
@@ -12,17 +17,21 @@ exports.createVendor = async (vendorData, vendorId) => {
 	if (isExist) return { message: "You already created your shop!" };
 	const vendor = new Vendor(vendorData);
 	const saved = await vendor.save();
-	await redisClient.set(
-		getVendorCacheKey(saved.userId),
-		JSON.stringify(saved),
-		{ EX: 300 }
-	);
+	if (isRedisAvailable()) {
+		await redisClient.set(
+			getVendorCacheKey(saved.userId),
+			JSON.stringify(saved),
+			{ EX: 300 }
+		);
+	}
 	return saved;
 };
 
 exports.followVendor = async (vendorId, userId) => {
 	try {
-		await redisClient.del(`vendor:details:${vendorId}`);
+		if (isRedisAvailable()) {
+			await redisClient.del(`vendor:details:${vendorId}`);
+		}
 
 		const vendor = await Vendor.findOne({ userId: vendorId });
 
@@ -66,9 +75,10 @@ exports.followVendor = async (vendorId, userId) => {
 exports.getFeaturedVendor = async () => {
 	try {
 		const featuredVendorKey = "vendor:featured"; // ✅ static or generated cache key
-		const cached = await redisClient.get(featuredVendorKey);
-
-		if (cached) return JSON.parse(cached);
+		if (isRedisAvailable()) {
+			const cached = await redisClient.get(featuredVendorKey);
+			if (cached) return JSON.parse(cached);
+		}
 
 		const featuredVendor = await Vendor.find()
 			.select("storeName userId imageUrl")
@@ -83,7 +93,7 @@ exports.getFeaturedVendor = async () => {
 		}));
 
 		// ✅ Cache only if data exists
-		if (filteredData.length > 0) {
+		if (filteredData.length > 0 && isRedisAvailable()) {
 			await redisClient.set(featuredVendorKey, JSON.stringify(filteredData), {
 				EX: 300, // 5 minutes
 			});
@@ -92,15 +102,25 @@ exports.getFeaturedVendor = async () => {
 		return filteredData;
 	} catch (error) {
 		console.error("Get Featured Vendor Error:", error);
-		return [];
+		// Fallback to DB if Redis fails
+		const featuredVendor = await Vendor.find()
+			.select("storeName userId imageUrl")
+			.lean();
+		const paginated = featuredVendor.slice(0, 10);
+		return paginated.map((data) => ({
+			storeName: data.storeName,
+			userId: data.userId,
+			imageUrl: data.imageUrl,
+		}));
 	}
 };
 
 exports.getVendorDetails = async (vendorId) => {
 	try {
-		const cached = await redisClient.get(getVendorDetailsKey(vendorId));
-
-		if (cached) return JSON.parse(cached);
+		if (isRedisAvailable()) {
+			const cached = await redisClient.get(getVendorDetailsKey(vendorId));
+			if (cached) return JSON.parse(cached);
+		}
 
 		const vendor = await Vendor.findOne({ userId: vendorId })
 			.select(
@@ -108,11 +128,13 @@ exports.getVendorDetails = async (vendorId) => {
 			)
 			.populate("followers", "name email"); // Populate followers if you want details, or remove this if just IDs
 
-		await redisClient.set(
-			getVendorDetailsKey(vendorId),
-			JSON.stringify(vendor),
-			{ EX: 300 }
-		);
+		if (isRedisAvailable()) {
+			await redisClient.set(
+				getVendorDetailsKey(vendorId),
+				JSON.stringify(vendor),
+				{ EX: 300 }
+			);
+		}
 
 		if (!vendor) {
 			throw new Error("Vendor not found");
@@ -120,19 +142,31 @@ exports.getVendorDetails = async (vendorId) => {
 
 		return vendor;
 	} catch (error) {
-		throw error;
+		const vendor = await Vendor.findOne({ userId: vendorId })
+			.select(
+				"address storeName followers rating numRatings userId totalProducts imageUrl"
+			)
+			.populate("followers", "name email");
+		return vendor;
 	}
 };
 
 exports.getVendorById = async (id) => {
 	const cacheKey = getVendorCacheKey(id);
-	const cached = await redisClient.get(cacheKey);
-	if (cached) return JSON.parse(cached);
+	if (isRedisAvailable()) {
+		const cached = await redisClient.get(cacheKey);
+		if (cached) return JSON.parse(cached);
+	}
 
-	const vendor = await Vendor.findOne({userId: id}).populate("followers", "name email"); ;
+	const vendor = await Vendor.findOne({ userId: id }).populate(
+		"followers",
+		"name email"
+	);
 	if (!vendor) throw new Error("Vendor not found");
 
-	await redisClient.set(cacheKey, JSON.stringify(vendor), { EX: 300 });
+	if (isRedisAvailable()) {
+		await redisClient.set(cacheKey, JSON.stringify(vendor), { EX: 300 });
+	}
 	return vendor;
 };
 
@@ -143,9 +177,11 @@ exports.updateVendor = async (id, updates) => {
 	});
 	if (!updated) throw new Error("Vendor not found or update failed");
 
-	await redisClient.set(getVendorCacheKey(id), JSON.stringify(updated), {
-		EX: 3600,
-	});
+	if (isRedisAvailable()) {
+		await redisClient.set(getVendorCacheKey(id), JSON.stringify(updated), {
+			EX: 3600,
+		});
+	}
 	return updated;
 };
 
@@ -153,7 +189,9 @@ exports.deleteVendor = async (id) => {
 	const deleted = await Vendor.findByIdAndDelete(id);
 	if (!deleted) throw new Error("Vendor not found or already deleted");
 
-	await redisClient.del(getVendorCacheKey(id));
+	if (isRedisAvailable()) {
+		await redisClient.del(getVendorCacheKey(id));
+	}
 };
 
 exports.incrementProfileViews = async (userId) => {
@@ -162,7 +200,7 @@ exports.incrementProfileViews = async (userId) => {
 		{ $inc: { profileViews: 1 } },
 		{ new: true }
 	);
-	if (vendor)
+	if (vendor && isRedisAvailable())
 		await redisClient.set(getVendorCacheKey(userId), JSON.stringify(vendor), {
 			EX: 3600,
 		});
@@ -174,7 +212,7 @@ exports.incrementProductClicks = async (userId) => {
 		{ $inc: { productClicks: 1 } },
 		{ new: true }
 	);
-	if (vendor)
+	if (vendor && isRedisAvailable())
 		await redisClient.set(getVendorCacheKey(userId), JSON.stringify(vendor), {
 			EX: 3600,
 		});
@@ -188,13 +226,28 @@ exports.incrementProductClicks = async (userId) => {
  * @param {String} month - The month name (optional, defaults to current month)
  * @returns {Object} Updated vendor document
  */
-exports.pushMonthlyRevenue = async (userId, revenueAmount, year = null, month = null) => {
+exports.pushMonthlyRevenue = async (
+	userId,
+	revenueAmount,
+	year = null,
+	month = null
+) => {
 	try {
 		const currentDate = new Date();
 		const targetYear = year || currentDate.getFullYear();
 		const monthNames = [
-			"January", "February", "March", "April", "May", "June",
-			"July", "August", "September", "October", "November", "December"
+			"January",
+			"February",
+			"March",
+			"April",
+			"May",
+			"June",
+			"July",
+			"August",
+			"September",
+			"October",
+			"November",
+			"December",
 		];
 		const targetMonth = month || monthNames[currentDate.getMonth()];
 

@@ -1,4 +1,10 @@
-const redisClient = require("../../config/redis");
+let redisClient;
+try {
+  redisClient = require("../../config/redis");
+} catch (e) {
+  console.warn("Redis client not available, falling back to MongoDB only.");
+  redisClient = null;
+}
 const Product = require("./products.model.js");
 const Admin = require("../admin/admin.model.js");
 const Vendor = require("../vendors/vendors.model.js");
@@ -8,46 +14,50 @@ const mongoose = require("mongoose");
 
 async function invalidateAllProductCaches() {
   console.log("Starting full product cache invalidation...");
+  if (!redisClient || !redisClient.isOpen) {
+    console.log("Skip cache invalidation: Redis not available");
+    return;
+  }
 
-  await redisClient.del(redisKey);
+  await redisClient.del(redisKey).catch(() => {});
 
   console.log(`Deleted key: ${redisKey}`);
 
-  const paginatedKeys = await redisClient.keys("products:skip:*:limit:*");
+  const paginatedKeys = await redisClient.keys("products:skip:*:limit:*").catch(() => []);
   if (paginatedKeys.length) {
-    await redisClient.del(...paginatedKeys);
+    await redisClient.del(...paginatedKeys).catch(() => {});
     console.log(`Deleted ${paginatedKeys.length} paginated keys`);
   } else {
     console.log(`No paginated keys found`);
   }
 
-  const categoryKeys = await redisClient.keys("products:category:*");
+  const categoryKeys = await redisClient.keys("products:category:*").catch(() => []);
   if (categoryKeys.length) {
-    await redisClient.del(...categoryKeys);
+    await redisClient.del(...categoryKeys).catch(() => {});
     console.log(`Deleted ${categoryKeys.length} category keys`);
   } else {
     console.log(`No category keys found`);
   }
 
-  const searchKeys = await redisClient.keys("products:search:*");
+  const searchKeys = await redisClient.keys("products:search:*").catch(() => []);
   if (searchKeys.length) {
-    await redisClient.del(...searchKeys);
+    await redisClient.del(...searchKeys).catch(() => {});
     console.log(`Deleted ${searchKeys.length} search keys`);
   } else {
     console.log(`No search keys found`);
   }
 
-  const municipalityKeys = await redisClient.keys("products:municipality:*");
+  const municipalityKeys = await redisClient.keys("products:municipality:*").catch(() => []);
   if (municipalityKeys.length) {
-    await redisClient.del(...municipalityKeys);
+    await redisClient.del(...municipalityKeys).catch(() => {});
     console.log(`Deleted ${municipalityKeys.length} municipality keys`);
   } else {
     console.log(`No municipality keys found`);
   }
 
-  const vendorKeys = await redisClient.keys("product:vendor:*");
+  const vendorKeys = await redisClient.keys("product:vendor:*").catch(() => []);
   if (vendorKeys.length) {
-    await redisClient.del(...vendorKeys);
+    await redisClient.del(...vendorKeys).catch(() => {});
     console.log(`Deleted ${municipalityKeys.length} municipality keys`);
   } else {
     console.log(`No municipality keys found`);
@@ -60,7 +70,7 @@ async function getPaginatedProducts(skip, limit) {
   const redisPageKey = `products:skip:${skip}:limit:${limit}`;
   let paginatedProducts;
 
-  const cache = await redisClient.get(redisPageKey);
+  const cache = redisClient && redisClient.isOpen ? await redisClient.get(redisPageKey).catch(() => null) : null;
   if (cache) {
     console.log("Redis cache hit:", redisPageKey);
     paginatedProducts = JSON.parse(cache);
@@ -70,13 +80,12 @@ async function getPaginatedProducts(skip, limit) {
       .skip(skip)
       .limit(limit)
       .lean();
-
-    await redisClient.setEx(
-      redisPageKey,
-      300,
-      JSON.stringify(paginatedProducts)
-    ); // 5 min TTL
-    console.log(`Cached products page skip=${skip}, limit=${limit}`);
+    if (redisClient && redisClient.isOpen) {
+      await redisClient
+        .setEx(redisPageKey, 300, JSON.stringify(paginatedProducts))
+        .catch(() => {}); // 5 min TTL
+      console.log(`Cached products page skip=${skip}, limit=${limit}`);
+    }
   }
 
   return paginatedProducts;
@@ -97,22 +106,26 @@ async function getProductsByCategoryService(category, limit, skip) {
   const normalizeCategory = category.toLowerCase().trim();
   const cacheKey = `products:category:${normalizeCategory}:limit:${limit}:skip:${skip}`;
 
-  const cached = await redisClient.get(cacheKey);
+  const cached = redisClient && redisClient.isOpen ? await redisClient.get(cacheKey).catch(() => null) : null;
   if (cached) {
     console.log("Redis cache hit:", cacheKey);
     return JSON.parse(cached);
   }
 
   let allProducts;
-  const allCached = await redisClient.get(redisKey);
+  const allCached = redisClient && redisClient.isOpen ? await redisClient.get(redisKey).catch(() => null) : null;
 
   if (allCached) {
     allProducts = JSON.parse(allCached);
     console.log("🗃 Products loaded from Redis: products:all");
   } else {
     allProducts = await Product.find().lean();
-    await redisClient.set(redisKey, JSON.stringify(allProducts), { EX: 600 });
-    console.log("Re-fetched and cached all products from MongoDB");
+    if (redisClient && redisClient.isOpen) {
+      await redisClient
+        .set(redisKey, JSON.stringify(allProducts), { EX: 600 })
+        .catch(() => {});
+      console.log("Re-fetched and cached all products from MongoDB");
+    }
   }
 
   const filtered = allProducts.filter((p) => {
@@ -125,7 +138,9 @@ async function getProductsByCategoryService(category, limit, skip) {
   const paginated =
     limit > 0 ? filtered.slice(skip, skip + limit) : filtered.slice(skip);
 
-  await redisClient.setEx(cacheKey, 3600, JSON.stringify(paginated)); // 1 hour TTL
+  if (redisClient && redisClient.isOpen) {
+    await redisClient.setEx(cacheKey, 3600, JSON.stringify(paginated)).catch(() => {}); // 1 hour TTL
+  }
 
   return paginated;
 }
@@ -136,22 +151,26 @@ async function getProductByMunicipality(municipality, category, limit, skip) {
   const normalizeCategory = category.toLowerCase().trim();
   const cacheKey = `products:municipality:${normalizeMunicipality}${category}:limit:${limit}:skip:${skip}`;
 
-  const cached = await redisClient.get(cacheKey);
+  const cached = redisClient && redisClient.isOpen ? await redisClient.get(cacheKey).catch(() => null) : null;
   if (cached) {
     console.log("Redis cache hit:", cacheKey);
     return JSON.parse(cached);
   }
 
   let allProducts;
-  const allCached = await redisClient.get(redisKey);
+  const allCached = redisClient && redisClient.isOpen ? await redisClient.get(redisKey).catch(() => null) : null;
 
   if (allCached) {
     allProducts = JSON.parse(allCached);
     console.log("🗃 Products loaded from Redis: products:all");
   } else {
     allProducts = await Product.find().lean();
-    await redisClient.set(redisKey, JSON.stringify(allProducts), { EX: 600 });
-    console.log("Re-fetched and cached all products from MongoDB");
+    if (redisClient && redisClient.isOpen) {
+      await redisClient
+        .set(redisKey, JSON.stringify(allProducts), { EX: 600 })
+        .catch(() => {});
+      console.log("Re-fetched and cached all products from MongoDB");
+    }
   }
 
   let filtered;
@@ -189,9 +208,11 @@ async function getProductByMunicipality(municipality, category, limit, skip) {
   const paginated =
     limit > 0 ? filtered.slice(skip, skip + limit) : filtered.slice(skip);
 
-  await redisClient.set(cacheKey, JSON.stringify(paginated), {
-    EX: 300,
-  }); // 1 hour TTL
+  if (redisClient && redisClient.isOpen) {
+    await redisClient
+      .set(cacheKey, JSON.stringify(paginated), { EX: 300 })
+      .catch(() => {}); // 1 hour TTL
+  }
 
   return paginated;
 }
@@ -275,7 +296,7 @@ async function getProductByVendor(vendorId, limit = 15, skip = 0) {
   const skipNum = parseInt(skip) || 0;
   const cacheKey = `product:vendor:${vendorId}`;
 
-  const cached = await redisClient.get(cacheKey);
+  const cached = redisClient && redisClient.isOpen ? await redisClient.get(cacheKey).catch(() => null) : null;
 
   if (cached) return JSON.parse(cached);
 
@@ -283,14 +304,16 @@ async function getProductByVendor(vendorId, limit = 15, skip = 0) {
 
   // const paginated = vendorProducts.slice(skipNum, limitNum);
 
-  redisClient.set(cacheKey, JSON.stringify(vendorProducts), { EX: 300 });
+  if (redisClient && redisClient.isOpen) {
+    redisClient.set(cacheKey, JSON.stringify(vendorProducts), { EX: 300 }).catch(() => {});
+  }
 
   return vendorProducts;
 }
 
 async function getProductByIdService(id) {
   const cacheKey = `products:${id}`;
-  const cached = await redisClient.get(cacheKey);
+  const cached = redisClient && redisClient.isOpen ? await redisClient.get(cacheKey).catch(() => null) : null;
 
   if (cached) return JSON.parse(cached);
 
@@ -309,9 +332,11 @@ async function getProductByIdService(id) {
   };
 
   // Cache for 10 minutes
-  await redisClient.set(cacheKey, JSON.stringify(productWithVendorProfile), {
-    EX: 500,
-  });
+  if (redisClient && redisClient.isOpen) {
+    await redisClient
+      .set(cacheKey, JSON.stringify(productWithVendorProfile), { EX: 500 })
+      .catch(() => {});
+  }
 
   return productWithVendorProfile;
 }
@@ -319,7 +344,9 @@ async function getProductByIdService(id) {
 // update
 async function updateProductService(id, data) {
   const PRODUCT_BY_ID_KEY = `products:${id}`;
-  await redisClient.del(PRODUCT_BY_ID_KEY);
+  if (redisClient && redisClient.isOpen) {
+    await redisClient.del(PRODUCT_BY_ID_KEY).catch(() => {});
+  }
   const updatedProduct = await Product.findByIdAndUpdate(id, data, {
     new: true,
     runValidators: true,
@@ -415,7 +442,9 @@ async function removeVariant(productId, variantId) {
 
     if (product.option.length <= 1) {
       await Product.findByIdAndDelete(productId);
-      await redisClient.del(`products:${productId}`);
+      if (redisClient && redisClient.isOpen) {
+        await redisClient.del(`products:${productId}`).catch(() => {});
+      }
       await invalidateAllProductCaches();
       return {
         deleted: true,
@@ -435,7 +464,9 @@ async function removeVariant(productId, variantId) {
     }
 
     await product.save();
-    await redisClient.del(`products:${productId}`);
+    if (redisClient && redisClient.isOpen) {
+      await redisClient.del(`products:${productId}`).catch(() => {});
+    }
     await invalidateAllProductCaches();
 
     return {

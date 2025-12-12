@@ -1,5 +1,9 @@
 const Order = require("./orders.model");
-const redisClient = require("../../config/redis");
+const {
+	getRedisClient,
+	isRedisAvailable,
+} = require("../../config/redis");
+const redisClient = getRedisClient();
 const Admin = require("../admin/admin.model.js");
 const { emitAgreementMessage } = require("../../config/socket");
 const Product = require("../products/products.model");
@@ -93,8 +97,10 @@ const updateVendorRevenue = async (vendorId, orderAmount) => {
 		await vendor.save();
 
 		// Clear vendor cache
-		await redisClient.del(`vendor:${vendorId}`);
-		await redisClient.del(`vendor:${vendor._id}`);
+		if (isRedisAvailable()) {
+			await redisClient.del(`vendor:${vendorId}`).catch(() => {});
+			await redisClient.del(`vendor:${vendor._id}`).catch(() => {});
+		}
 
 		console.log(`✅ [REVENUE TRACKING] Successfully saved! Revenue added: +${orderAmount} to ${currentMonth} ${currentYear}`);
 		console.log(`📈 [REVENUE TRACKING] monthlyRevenueComparison updated for vendor ${vendor.storeName}\n`);
@@ -115,28 +121,28 @@ exports.createOrderService = async (orderData) => {
 		await Admin.updateOne({}, { $inc: { totalOrders: 1, newOrdersCount: 1 } });
 
 		// Invalidate Redis cache
-		if (redisClient) {
+		if (isRedisAvailable()) {
 			try {
-				await redisClient.del(getUserOrdersKey(orderData.userId));
+				await redisClient.del(getUserOrdersKey(orderData.userId)).catch(() => {});
 				if (orderData.vendorId) {
-					await redisClient.del(getVendorOrdersKey(orderData.vendorId));
+					await redisClient.del(getVendorOrdersKey(orderData.vendorId)).catch(() => {});
 				}
 
 				// Each product in the order
 				if (Array.isArray(orderData.items)) {
 					for (const item of orderData.items) {
 						if (item.orderProductId) {
-							await redisClient.del(getProductOrdersKey(item.orderProductId));
+							await redisClient.del(getProductOrdersKey(item.orderProductId)).catch(() => {});
 						}
 					}
 				}
 
 				// This specific order (if cached)
-				await redisClient.del(getOrderKey(savedOrder._id.toString()));
-				await redisClient.del(getUserOrdersKey(savedOrder.customerId.toString()));
+				await redisClient.del(getOrderKey(savedOrder._id.toString())).catch(() => {});
+				await redisClient.del(getUserOrdersKey(savedOrder.customerId.toString())).catch(() => {});
 
 				// Optional: Admin dashboard/statistics cache
-				await redisClient.del("adminDashboardStats");
+				await redisClient.del("adminDashboardStats").catch(() => {});
 			} catch (redisErr) {
 				console.warn("Redis cache invalidation failed:", redisErr.message);
 			}
@@ -151,14 +157,18 @@ exports.createOrderService = async (orderData) => {
 // GET ORDERS BY USER
 exports.getOrdersByUserService = async (userId) => {
 	const key = getUserOrdersKey(userId);
-	const cache = await redisClient.get(key);
-	if (cache) return JSON.parse(cache);
+	
+	if (isRedisAvailable()) {
+		const cache = await redisClient.get(key).catch(() => null);
+		if (cache) return JSON.parse(cache);
+	}
 
 	const orders = await Order.find({ customerId: userId })
 		.sort({ createdAt: -1 })
 		.lean();
-	if (orders.length > 0) {
-		await redisClient.set(key, JSON.stringify(orders), { EX: 300 });
+		
+	if (orders.length > 0 && isRedisAvailable()) {
+		await redisClient.set(key, JSON.stringify(orders), { EX: 300 }).catch(() => {});
 	}
 	return orders;
 };
@@ -166,13 +176,16 @@ exports.getOrdersByUserService = async (userId) => {
 // GET ORDERS BY VENDOR
 exports.getOrdersByVendorService = async (vendorId) => {
 	const key = getVendorOrdersKey(vendorId);
-	const cache = await redisClient.get(key);
-	if (cache) return JSON.parse(cache);
+	
+	if (isRedisAvailable()) {
+		const cache = await redisClient.get(key).catch(() => null);
+		if (cache) return JSON.parse(cache);
+	}
 
 	const orders = await Order.find({ vendorId }).sort({ createdAt: -1 }).lean();
 
-	if (orders.length > 0) {
-		await redisClient.set(key, JSON.stringify(orders), { EX: 150 });
+	if (orders.length > 0 && isRedisAvailable()) {
+		await redisClient.set(key, JSON.stringify(orders), { EX: 150 }).catch(() => {});
 	}
 	return orders;
 };
@@ -180,15 +193,18 @@ exports.getOrdersByVendorService = async (vendorId) => {
 // GET ORDERS BY PRODUCT
 exports.getOrdersByProductService = async (productId) => {
 	const key = getProductOrdersKey(productId);
-	const cache = await redisClient.get(key);
-	if (cache) return JSON.parse(cache);
+	
+	if (isRedisAvailable()) {
+		const cache = await redisClient.get(key).catch(() => null);
+		if (cache) return JSON.parse(cache);
+	}
 
 	const orders = await Order.find({ "items.orderProductId": productId })
 		.sort({ createdAt: -1 })
 		.lean();
 
-	if (orders.length > 0) {
-		await redisClient.set(key, JSON.stringify(orders));
+	if (orders.length > 0 && isRedisAvailable()) {
+		await redisClient.set(key, JSON.stringify(orders)).catch(() => {});
 	}
 	return orders;
 };
@@ -196,12 +212,15 @@ exports.getOrdersByProductService = async (productId) => {
 // GET ORDER BY ID 
 exports.getOrderByIdService = async (orderId) => {
 	const key = getOrderKey(orderId);
-	const cache = await redisClient.get(key);
-	if (cache) return JSON.parse(cache);
+	
+	if (isRedisAvailable()) {
+		const cache = await redisClient.get(key).catch(() => null);
+		if (cache) return JSON.parse(cache);
+	}
 
 	const order = await Order.findById(orderId).lean();
-	if (order) {
-		await redisClient.set(key, JSON.stringify(order));
+	if (order && isRedisAvailable()) {
+		await redisClient.set(key, JSON.stringify(order)).catch(() => {});
 	}
 	return order;
 };
@@ -218,14 +237,16 @@ exports.cancelOrderService = async (orderId) => {
 
 	await Admin.updateOne({}, { $inc: { canceledOrdersCount: 1 } });
 
-	await Promise.all([
-		redisClient.set(getOrderKey(orderId), JSON.stringify(updated)),
-		redisClient.del(getUserOrdersKey(updated.userId)),
-		redisClient.del(getVendorOrdersKey(updated.vendorId)),
-		...updated.items.map((item) =>
-			redisClient.del(getProductOrdersKey(item.orderProductId))
-		),
-	]);
+	if (isRedisAvailable()) {
+		await Promise.all([
+			redisClient.set(getOrderKey(orderId), JSON.stringify(updated)).catch(() => {}),
+			redisClient.del(getUserOrdersKey(updated.userId)).catch(() => {}),
+			redisClient.del(getVendorOrdersKey(updated.vendorId)).catch(() => {}),
+			...updated.items.map((item) =>
+				redisClient.del(getProductOrdersKey(item.orderProductId)).catch(() => {})
+			),
+		]);
+	}
 
 	return updated;
 };
@@ -240,18 +261,18 @@ const ALLOWED_TRANSITIONS = {
 
 // Helper function to delete Redis keys by pattern without blocking
 const deleteKeysByPattern = async (pattern) => {
-	if (!redisClient) return;
+	if (!isRedisAvailable()) return;
 	try {
 		let cursor = 0;
 		do {
 			const reply = await redisClient.scan(cursor, {
 				MATCH: pattern,
 				COUNT: 100, // Process 100 keys per iteration
-			});
+			}).catch(() => ({ cursor: 0, keys: [] }));
 			cursor = reply.cursor;
 			const keys = reply.keys;
 			if (keys.length > 0) {
-				await redisClient.del(keys);
+				await redisClient.del(keys).catch(() => {});
 			}
 		} while (cursor !== 0);
 		console.log(`Cache invalidated for pattern: ${pattern}`);
