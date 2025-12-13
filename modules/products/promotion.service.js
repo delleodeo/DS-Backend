@@ -1,4 +1,6 @@
 const Product = require('./products.model.js');
+const { invalidateAllProductCaches } = require('./products.service.js');
+const { invalidateAllCartCaches } = require('../cart/cart.service.js');
 
 /**
  * Calculate discounted price based on promotion
@@ -98,6 +100,11 @@ async function applyPromotionToProduct(productId, promotionData) {
     { new: true, runValidators: true }
   );
   
+  // Invalidate caches to ensure buyer-side sees updated promotion
+  await invalidateAllProductCaches();
+  await invalidateAllCartCaches();
+  console.log(`[Cache] Invalidated product and cart caches after applying product promotion`);
+  
   return product;
 }
 
@@ -139,6 +146,11 @@ async function applyPromotionToOption(productId, optionId, promotionData) {
     { new: true, runValidators: true }
   );
   
+  // Invalidate caches to ensure buyer-side sees updated promotion
+  await invalidateAllProductCaches();
+  await invalidateAllCartCaches();
+  console.log(`[Cache] Invalidated product and cart caches after applying option promotion`);
+  
   return product;
 }
 
@@ -155,10 +167,21 @@ async function removePromotionFromProduct(productId) {
         'promotion.isActive': false,
         'promotion.discountType': 'none',
         'promotion.discountValue': 0,
+        'promotion.freeShipping': false,
+        'promotion.startDate': null,
+        'promotion.endDate': null
       }
     },
     { new: true }
   );
+  
+  // Invalidate caches to ensure buyer-side sees removed promotion immediately
+  await invalidateAllProductCaches();
+  await invalidateAllCartCaches();
+  
+  // Log promotion removal for tracking
+  console.log(`[Promotion] Removed promotion from product ${productId}`);
+  console.log(`[Cache] Invalidated product and cart caches`);
   
   return product;
 }
@@ -177,10 +200,21 @@ async function removePromotionFromOption(productId, optionId) {
         'option.$.promotion.isActive': false,
         'option.$.promotion.discountType': 'none',
         'option.$.promotion.discountValue': 0,
+        'option.$.promotion.freeShipping': false,
+        'option.$.promotion.startDate': null,
+        'option.$.promotion.endDate': null
       }
     },
     { new: true }
   );
+  
+  // Invalidate caches to ensure buyer-side sees removed promotion immediately
+  await invalidateAllProductCaches();
+  await invalidateAllCartCaches();
+  
+  // Log promotion removal for tracking
+  console.log(`[Promotion] Removed promotion from option ${optionId} of product ${productId}`);
+  console.log(`[Cache] Invalidated product and cart caches`);
   
   return product;
 }
@@ -228,12 +262,20 @@ async function deactivateExpiredPromotions() {
     }
   }
   
+  // Invalidate cache if any promotions were deactivated
+  const totalDeactivated = productResult.modifiedCount + optionCount;
+  if (totalDeactivated > 0) {
+    await invalidateAllProductCaches();
+    await invalidateAllCartCaches();
+    console.log(`[Cache] Invalidated product and cart caches after expired promotion cleanup`);
+  }
+  
   console.log(`[Promotion Expiration] Deactivated ${productResult.modifiedCount} product promotions and ${optionCount} option promotions`);
   
   return {
     productPromotions: productResult.modifiedCount,
     optionPromotions: optionCount,
-    total: productResult.modifiedCount + optionCount
+    total: totalDeactivated
   };
 }
 
@@ -243,23 +285,39 @@ async function deactivateExpiredPromotions() {
  * @returns {Promise<Array>} - Active promotions
  */
 async function getActivePromotionsByVendor(vendorId) {
+  console.log(`[Promotion Service] Fetching promotions for vendor: ${vendorId}`);
+  
+  // Convert to ObjectId if it's a string
+  const mongoose = require('mongoose');
+  const vendorObjectId = mongoose.Types.ObjectId.isValid(vendorId) 
+    ? new mongoose.Types.ObjectId(vendorId) 
+    : vendorId;
+  
+  console.log(`[Promotion Service] Converted vendorId to ObjectId: ${vendorObjectId}`);
+  
   const products = await Product.find({
-    vendorId,
+    vendorId: vendorObjectId,
     $or: [
       { 'promotion.isActive': true },
       { 'option.promotion.isActive': true }
     ]
   }).select('name price promotion option');
   
+  console.log(`[Promotion Service] Found ${products.length} products with active promotions`);
+  
   const activePromotions = [];
   
   products.forEach(product => {
+    console.log(`[Promotion Service] Checking product: ${product.name} (${product._id})`);
+    
     // Check product-level promotion
     if (product.promotion?.isActive && isPromotionValid(product.promotion)) {
+      console.log(`[Promotion Service] Adding product-level promotion for: ${product.name}`);
       activePromotions.push({
         productId: product._id,
         productName: product.name,
         type: 'product',
+        status: getPromotionStatusString(product.promotion),
         originalPrice: product.price,
         discountedPrice: calculateDiscountedPrice(product.price, product.promotion),
         promotion: product.promotion
@@ -270,12 +328,14 @@ async function getActivePromotionsByVendor(vendorId) {
     if (product.option) {
       product.option.forEach(option => {
         if (option.promotion?.isActive && isPromotionValid(option.promotion)) {
+          console.log(`[Promotion Service] Adding option-level promotion for: ${product.name} - ${option.label}`);
           activePromotions.push({
             productId: product._id,
             productName: product.name,
             optionId: option._id,
             optionLabel: option.label,
             type: 'option',
+            status: getPromotionStatusString(option.promotion),
             originalPrice: option.price,
             discountedPrice: calculateDiscountedPrice(option.price, option.promotion),
             promotion: option.promotion
@@ -285,7 +345,96 @@ async function getActivePromotionsByVendor(vendorId) {
     }
   });
   
+  console.log(`[Promotion Service] Returning ${activePromotions.length} active promotions`);
   return activePromotions;
+}
+
+/**
+ * Get promotion status for a product or specific option
+ * @param {String} productId - Product ID
+ * @param {String} optionId - Optional option ID
+ * @returns {Promise<Object>} - Promotion status information
+ */
+async function getPromotionStatus(productId, optionId = null) {
+  const product = await Product.findById(productId).select('promotion option');
+  
+  if (!product) {
+    throw new Error('Product not found');
+  }
+  
+  const result = {
+    productId,
+    hasProductPromotion: false,
+    hasOptionPromotion: false,
+    promotions: []
+  };
+  
+  // Check product-level promotion
+  if (product.promotion?.isActive && isPromotionValid(product.promotion)) {
+    result.hasProductPromotion = true;
+    result.promotions.push({
+      type: 'product',
+      status: getPromotionStatusString(product.promotion),
+      promotion: product.promotion,
+      discountedPrice: calculateDiscountedPrice(product.price, product.promotion)
+    });
+  }
+  
+  // Check option-level promotions
+  if (optionId) {
+    // Specific option
+    const option = product.option?.find(opt => opt._id.toString() === optionId);
+    if (option && option.promotion?.isActive && isPromotionValid(option.promotion)) {
+      result.hasOptionPromotion = true;
+      result.optionId = optionId;
+      result.promotions.push({
+        type: 'option',
+        optionId: option._id,
+        optionLabel: option.label,
+        status: getPromotionStatusString(option.promotion),
+        promotion: option.promotion,
+        discountedPrice: calculateDiscountedPrice(option.price, option.promotion)
+      });
+    }
+  } else if (product.option) {
+    // All options
+    product.option.forEach(option => {
+      if (option.promotion?.isActive && isPromotionValid(option.promotion)) {
+        result.hasOptionPromotion = true;
+        result.promotions.push({
+          type: 'option',
+          optionId: option._id,
+          optionLabel: option.label,
+          status: getPromotionStatusString(option.promotion),
+          promotion: option.promotion,
+          discountedPrice: calculateDiscountedPrice(option.price, option.promotion)
+        });
+      }
+    });
+  }
+  
+  return result;
+}
+
+/**
+ * Get promotion status string
+ * @param {Object} promotion - Promotion object
+ * @returns {String} - Status string
+ */
+function getPromotionStatusString(promotion) {
+  if (!promotion || !promotion.isActive) return 'inactive';
+  
+  const now = new Date();
+  
+  if (promotion.startDate && new Date(promotion.startDate) > now) {
+    return 'scheduled';
+  }
+  
+  if (promotion.endDate && new Date(promotion.endDate) < now) {
+    return 'expired';
+  }
+  
+  return 'active';
 }
 
 module.exports = {
@@ -298,4 +447,5 @@ module.exports = {
   removePromotionFromOption,
   deactivateExpiredPromotions,
   getActivePromotionsByVendor,
+  getPromotionStatus,
 };

@@ -303,17 +303,24 @@ async function getProductByVendor(vendorId, limit = 15, skip = 0) {
 
   const cached = redisClient && redisClient.isOpen ? await redisClient.get(cacheKey).catch(() => null) : null;
 
-  if (cached) return JSON.parse(cached);
+  if (cached) {
+    const parsedProducts = JSON.parse(cached);
+    // Re-create mongoose documents to recalculate virtual fields
+    return parsedProducts.map(p => new Product(p).toJSON());
+  }
 
   const vendorProducts = await Product.find({ vendorId });
+
+  // Convert to JSON to ensure virtual fields are included
+  const productsWithVirtuals = vendorProducts.map(p => p.toJSON());
 
   // const paginated = vendorProducts.slice(skipNum, limitNum);
 
   if (redisClient && redisClient.isOpen) {
-    redisClient.set(cacheKey, JSON.stringify(vendorProducts), { EX: 300 }).catch(() => {});
+    redisClient.set(cacheKey, JSON.stringify(productsWithVirtuals), { EX: 300 }).catch(() => {});
   }
 
-  return vendorProducts;
+  return productsWithVirtuals;
 }
 
 async function getProductByIdService(id) {
@@ -322,8 +329,10 @@ async function getProductByIdService(id) {
 
   if (cached) return JSON.parse(cached);
 
-  const product = await Product.findById(id).lean();
-  if (!product) return null; // Check first
+  const productDoc = await Product.findById(id);
+  if (!productDoc) return null; // Check first
+
+  const product = productDoc.toObject(); // Convert to plain object to include virtuals
 
   const { vendorId } = product;
   const vendorProfile = await Vendor.findOne({ userId: vendorId })
@@ -730,4 +739,5 @@ module.exports = {
   addProductStock,
   addProductStockMain,
   ensureMainImage,
+  invalidateAllProductCaches,
 };

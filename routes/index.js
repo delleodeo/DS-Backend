@@ -14,8 +14,8 @@ const reviewRoutes = require("../modules/reviews/review.routes");
 const messageRoutes = require("../modules/messages/message.routes");
 const socketTestRoutes = require("./socket-test");
 
+router.use("/products", promotionRoutes);  // Mount promotion routes FIRST to avoid conflicts
 router.use("/products", productRoutes);
-router.use("/products", promotionRoutes);
 router.use("/cart", protect, cartRoutes);
 router.use("/order", orderRoutes);
 router.use("/user", userRoutes);

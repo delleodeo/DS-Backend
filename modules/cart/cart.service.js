@@ -113,3 +113,30 @@ exports.clearCartService = async (userId) => {
 	}
 	return cart;
 };
+
+/**
+ * Invalidate all cart caches to force fresh data fetch
+ * Should be called when promotions are changed/ended
+ */
+exports.invalidateAllCartCaches = async () => {
+	console.log("Starting cart cache invalidation...");
+	if (!isRedisAvailable()) {
+		console.log("Skip cart cache invalidation: Redis not available");
+		return;
+	}
+
+	try {
+		// Get all cart cache keys
+		const cartKeys = await redisClient.keys("cart:*").catch(() => []);
+		
+		if (cartKeys.length > 0) {
+			// Delete all cart cache keys
+			await redisClient.del(...cartKeys).catch(() => {});
+			console.log(`✅ Invalidated ${cartKeys.length} cart cache entries`);
+		} else {
+			console.log("No cart caches found to invalidate");
+		}
+	} catch (error) {
+		console.error("Error invalidating cart caches:", error);
+	}
+};

@@ -64,4 +64,74 @@ const ProductSchema = new mongoose.Schema({
 	promotion: { type: PromotionSchema, default: () => ({}) },
 });
 
+// Virtual for checking if a product has an active promotion
+ProductSchema.virtual('hasPromotion').get(function() {
+  // A promotion is active if the flag is true and it's not scheduled for the future or already expired.
+  if (!this.promotion || !this.promotion.isActive) {
+    return false;
+  }
+  const now = new Date();
+  if (this.promotion.startDate && new Date(this.promotion.startDate) > now) {
+    return false; // Scheduled, not active yet
+  }
+  if (this.promotion.endDate && new Date(this.promotion.endDate) < now) {
+    return false; // Expired
+  }
+  return true;
+});
+
+
+// Virtual for promotion status
+ProductSchema.virtual('promotionStatus').get(function() {
+  if (!this.promotion || !this.promotion.isActive) {
+    return 'inactive';
+  }
+  const now = new Date();
+  if (this.promotion.startDate && new Date(this.promotion.startDate) > now) {
+    return 'scheduled';
+  }
+  if (this.promotion.endDate && new Date(this.promotion.endDate) < now) {
+    return 'expired';
+  }
+  return 'active';
+});
+
+// Virtual for checking if an option has an active promotion
+OptionSchema.virtual('hasPromotion').get(function() {
+    // A promotion is active if the flag is true and it's not scheduled for the future or already expired.
+  if (!this.promotion || !this.promotion.isActive) {
+    return false;
+  }
+  const now = new Date();
+  if (this.promotion.startDate && new Date(this.promotion.startDate) > now) {
+    return false; // Scheduled, not active yet
+  }
+  if (this.promotion.endDate && new Date(this.promotion.endDate) < now) {
+    return false; // Expired
+  }
+  return true;
+});
+
+// Virtual for promotion status on option
+OptionSchema.virtual('promotionStatus').get(function() {
+  if (!this.promotion || !this.promotion.isActive) {
+    return 'inactive';
+  }
+  const now = new Date();
+  if (this.promotion.startDate && new Date(this.promotion.startDate) > now) {
+    return 'scheduled';
+  }
+  if (this.promotion.endDate && new Date(this.promotion.endDate) < now) {
+    return 'expired';
+  }
+  return 'active';
+});
+
+
+// Ensure virtuals are included in toJSON and toObject outputs
+ProductSchema.set('toJSON', { virtuals: true });
+ProductSchema.set('toObject', { virtuals: true });
+OptionSchema.set('toJSON', { virtuals: true });
+OptionSchema.set('toObject', { virtuals: true });
+
 module.exports = mongoose.model("Product", ProductSchema);

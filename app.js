@@ -16,6 +16,7 @@ app.use(
     origin: [
       "https://darylbacongco.me",
       "http://localhost:3000",
+      "http://localhost:3001",  // Add this for the 404 error fix
       "http://localhost:3002",
       "http://localhost:5173", 
       "http://localhost:4173"  // Add Vite preview
