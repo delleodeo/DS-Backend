@@ -265,9 +265,11 @@ async function deactivateExpiredPromotions() {
   // Invalidate cache if any promotions were deactivated
   const totalDeactivated = productResult.modifiedCount + optionCount;
   if (totalDeactivated > 0) {
+    // Invalidate all product caches including individual product caches
     await invalidateAllProductCaches();
     await invalidateAllCartCaches();
     console.log(`[Cache] Invalidated product and cart caches after expired promotion cleanup`);
+    console.log(`[Cache] This includes individual product caches to ensure cart items show correct prices`);
   }
   
   console.log(`[Promotion Expiration] Deactivated ${productResult.modifiedCount} product promotions and ${optionCount} option promotions`);

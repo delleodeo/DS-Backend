@@ -13,6 +13,67 @@ const { deleteBatchFromCloudinary, extractPublicIdFromUrl } = require("../upload
 const redisKey = "products:all";
 const mongoose = require("mongoose");
 
+/**
+ * Validate and clean expired promotions from product data
+ * This ensures that even cached products return accurate promotion status
+ * Also manually attaches virtual fields (hasPromotion, promotionStatus) for lean queries
+ * @param {Object} product - Product object (will be modified in place)
+ */
+function validateAndCleanPromotions(product) {
+  if (!product) return;
+  
+  const now = new Date();
+
+  const getStatus = (promo) => {
+    if (!promo || !promo.isActive) return 'inactive';
+    if (promo.startDate && new Date(promo.startDate) > now) return 'scheduled';
+    if (promo.endDate && new Date(promo.endDate) < now) return 'expired';
+    return 'active';
+  };
+  
+  // Check and clean product-level promotion
+  if (product.promotion) {
+    if (product.promotion.isActive) {
+      const isExpired = product.promotion.endDate && new Date(product.promotion.endDate) < now;
+      const hasNotStarted = product.promotion.startDate && new Date(product.promotion.startDate) > now;
+      
+      if (isExpired || hasNotStarted) {
+        product.promotion.isActive = false;
+        // console.log(`[Real-time Validation] Deactivated ${isExpired ? 'expired' : 'not-started'} product-level promotion for product ${product._id}`);
+      }
+    }
+    // Attach virtuals
+    product.promotionStatus = getStatus(product.promotion);
+    product.hasPromotion = product.promotionStatus === 'active';
+  } else {
+    product.promotionStatus = 'inactive';
+    product.hasPromotion = false;
+  }
+  
+  // Check and clean option-level promotions
+  if (product.option && Array.isArray(product.option)) {
+    product.option.forEach(option => {
+      if (option.promotion) {
+        if (option.promotion.isActive) {
+          const isExpired = option.promotion.endDate && new Date(option.promotion.endDate) < now;
+          const hasNotStarted = option.promotion.startDate && new Date(option.promotion.startDate) > now;
+          
+          if (isExpired || hasNotStarted) {
+            option.promotion.isActive = false;
+            // console.log(`[Real-time Validation] Deactivated ${isExpired ? 'expired' : 'not-started'} option-level promotion for option ${option._id}`);
+          }
+        }
+        // Attach virtuals
+        option.promotionStatus = getStatus(option.promotion);
+        option.hasPromotion = option.promotionStatus === 'active';
+      } else {
+        option.promotionStatus = 'inactive';
+        option.hasPromotion = false;
+      }
+    });
+  }
+}
+
 async function invalidateAllProductCaches() {
   console.log("Starting full product cache invalidation...");
   if (!redisClient || !redisClient.isOpen) {
@@ -64,6 +125,18 @@ async function invalidateAllProductCaches() {
     console.log(`No municipality keys found`);
   }
 
+  // Invalidate individual product caches (critical for cart items)
+  const individualProductKeys = await redisClient.keys("products:*").catch(() => []);
+  const productIdKeys = individualProductKeys.filter(key => {
+    const parts = key.split(':');
+    return parts.length === 2 && parts[0] === 'products' && mongoose.Types.ObjectId.isValid(parts[1]);
+  });
+  
+  if (productIdKeys.length) {
+    await redisClient.del(...productIdKeys).catch(() => {});
+    console.log(`Deleted ${productIdKeys.length} individual product cache keys`);
+  }
+
   console.log("All product-related caches invalidated successfully!");
 }
 
@@ -87,6 +160,11 @@ async function getPaginatedProducts(skip, limit) {
         .catch(() => {}); // 5 min TTL
       console.log(`Cached products page skip=${skip}, limit=${limit}`);
     }
+  }
+
+  // Apply validation and virtuals to all products
+  if (Array.isArray(paginatedProducts)) {
+    paginatedProducts.forEach(p => validateAndCleanPromotions(p));
   }
 
   return paginatedProducts;
@@ -145,6 +223,11 @@ async function getProductsByCategoryService(category, limit, skip) {
 
   if (redisClient && redisClient.isOpen) {
     await redisClient.setEx(cacheKey, 3600, JSON.stringify(paginated)).catch(() => {}); // 1 hour TTL
+  }
+
+  // Apply validation and virtuals
+  if (Array.isArray(paginated)) {
+    paginated.forEach(p => validateAndCleanPromotions(p));
   }
 
   return paginated;
@@ -219,6 +302,11 @@ async function getProductByMunicipality(municipality, category, limit, skip) {
       .catch(() => {}); // 1 hour TTL
   }
 
+  // Apply validation and virtuals
+  if (Array.isArray(paginated)) {
+    paginated.forEach(p => validateAndCleanPromotions(p));
+  }
+
   return paginated;
 }
 
@@ -247,6 +335,11 @@ async function getRelatedProducts(productId, limit = 6) {
     .sort({ updatedAt: -1 }) // newest first
     .limit(limit)
     .lean();
+
+  // Apply validation and virtuals
+  if (Array.isArray(related)) {
+    related.forEach(p => validateAndCleanPromotions(p));
+  }
 
   return related;
 }
@@ -293,6 +386,11 @@ async function searchProductsService(query, limit = 0, skip = 0) {
     await redisClient.set(cacheKey, JSON.stringify(paginated), { EX: 600 }); 
   }
 
+  // Apply validation and virtuals
+  if (Array.isArray(paginated)) {
+    paginated.forEach(p => validateAndCleanPromotions(p));
+  }
+
   return paginated;
 }
  
@@ -320,6 +418,11 @@ async function getProductByVendor(vendorId, limit = 15, skip = 0) {
     redisClient.set(cacheKey, JSON.stringify(productsWithVirtuals), { EX: 300 }).catch(() => {});
   }
 
+  // Apply validation and virtuals (redundant for virtuals but good for cleanup)
+  if (Array.isArray(productsWithVirtuals)) {
+    productsWithVirtuals.forEach(p => validateAndCleanPromotions(p));
+  }
+
   return productsWithVirtuals;
 }
 
@@ -327,12 +430,20 @@ async function getProductByIdService(id) {
   const cacheKey = `products:${id}`;
   const cached = redisClient && redisClient.isOpen ? await redisClient.get(cacheKey).catch(() => null) : null;
 
-  if (cached) return JSON.parse(cached);
+  if (cached) {
+    const cachedProduct = JSON.parse(cached);
+    // Validate promotions even on cached data to ensure accuracy
+    validateAndCleanPromotions(cachedProduct);
+    return cachedProduct;
+  }
 
   const productDoc = await Product.findById(id);
-  if (!productDoc) return null; // Check first
+  if (!productDoc) return null;
 
-  const product = productDoc.toObject(); // Convert to plain object to include virtuals
+  const product = productDoc.toObject();
+  
+  // Validate and clean expired promotions before returning
+  validateAndCleanPromotions(product);
 
   const { vendorId } = product;
   const vendorProfile = await Vendor.findOne({ userId: vendorId })
@@ -345,10 +456,10 @@ async function getProductByIdService(id) {
     vendorAvatar: vendorProfile?.imageUrl || null,
   };
 
-  // Cache for 10 minutes
+  // Reduced cache TTL to 2 minutes for more accurate promotion handling
   if (redisClient && redisClient.isOpen) {
     await redisClient
-      .set(cacheKey, JSON.stringify(productWithVendorProfile), { EX: 500 })
+      .set(cacheKey, JSON.stringify(productWithVendorProfile), { EX: 120 })
       .catch(() => {});
   }
 
@@ -740,4 +851,5 @@ module.exports = {
   addProductStockMain,
   ensureMainImage,
   invalidateAllProductCaches,
+  validateAndCleanPromotions,
 };

@@ -6,18 +6,20 @@ const { deactivateExpiredPromotions } = require('../modules/products/promotion.s
  * Runs every hour to check and deactivate expired promotions
  */
 function startPromotionExpirationCron() {
-  // Run every hour at minute 0
-  cron.schedule('0 * * * *', async () => {
+  // Run every 15 minutes for more timely promotion expiration handling
+  cron.schedule('*/15 * * * *', async () => {
     try {
       console.log('[Promotion Cron] Starting expired promotion check...');
       const result = await deactivateExpiredPromotions();
-      console.log(`[Promotion Cron] Completed. Deactivated ${result.total} promotions`);
+      if (result.total > 0) {
+        console.log(`[Promotion Cron] Completed. Deactivated ${result.total} promotions`);
+      }
     } catch (error) {
       console.error('[Promotion Cron] Error checking expired promotions:', error);
     }
   });
   
-  console.log('[Promotion Cron] Promotion expiration cron job scheduled (runs hourly)');
+  console.log('[Promotion Cron] Promotion expiration cron job scheduled (runs every 15 minutes)');
 }
 
 /**
