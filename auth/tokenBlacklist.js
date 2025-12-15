@@ -3,7 +3,7 @@ const jwt = require("jsonwebtoken");
 // Try to import Redis, but handle gracefully if it fails
 let redisClient;
 try {
-  redisClient = require("../../config/redis");
+  redisClient = require("../config/redis");
 } catch (error) {
   console.warn("Redis not available for token blacklist:", error.message);
   redisClient = null;

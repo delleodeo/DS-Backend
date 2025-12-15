@@ -77,9 +77,46 @@ const OrderSchema = new mongoose.Schema({
     default: "pending",
   },
 
+  // � Commission Tracking
+  commissionRate: { type: Number, default: 0.07 }, // 7% platform commission
+  commissionAmount: { type: Number, default: 0 },
+  sellerEarnings: { type: Number, default: 0 },
+  commissionStatus: {
+    type: String,
+    enum: ["pending", "paid", "waived"],
+    default: "pending",
+  },
+  commissionPaidAt: { type: Date },
+  commissionCollectedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+  commissionNotes: { type: String },
+
   // 🕒 Timestamps
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now },
 });
+
+// Pre-save middleware to calculate commission
+OrderSchema.pre('save', function(next) {
+  if (this.subTotal && this.commissionRate) {
+    this.commissionAmount = parseFloat((this.subTotal * this.commissionRate).toFixed(2));
+    this.sellerEarnings = parseFloat((this.subTotal - this.commissionAmount).toFixed(2));
+    
+    // For digital payments (wallet, gcash), mark commission as paid when order is delivered
+    // For COD, commission remains pending until manually collected
+    if (this.status === 'delivered') {
+      if (this.paymentMethod !== 'cod' && this.commissionStatus === 'pending') {
+        this.commissionStatus = 'paid';
+        this.commissionPaidAt = new Date();
+      }
+    }
+  }
+  this.updatedAt = new Date();
+  next();
+});
+
+// Indexes for commission queries
+OrderSchema.index({ commissionStatus: 1, status: 1 });
+OrderSchema.index({ vendorId: 1, commissionStatus: 1 });
+OrderSchema.index({ paymentMethod: 1, commissionStatus: 1 });
 
 module.exports = mongoose.model("Order", OrderSchema);

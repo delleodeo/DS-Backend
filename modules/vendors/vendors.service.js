@@ -1,5 +1,6 @@
 // vendor.service.js
 const Vendor = require("./vendors.model");
+const Order = require("../orders/orders.model");
 const {
 	getRedisClient,
 	isRedisAvailable,
@@ -9,6 +10,7 @@ const redisClient = getRedisClient();
 
 const getVendorCacheKey = (vendorId) => `vendor:${vendorId}`;
 const getVendorDetailsKey = (vendorId) => `vendor:details:${vendorId}`;
+const COMMISSION_RATE = 0.07; // 7% platform commission
 
 exports.createVendor = async (vendorData, vendorId) => {
 	const isExist = await Vendor.findOne({ userId: vendorId });
@@ -380,6 +382,174 @@ exports.batchResetMonthlyRevenue = async () => {
 		};
 	} catch (error) {
 		console.error("Batch Reset Monthly Revenue Error:", error);
+		throw error;
+	}
+};
+
+/**
+ * Get vendor financial summary with commission breakdown
+ * @param {String} vendorId - The vendor's user ID
+ * @returns {Object} Financial summary with earnings, commissions, and order breakdown
+ */
+exports.getVendorFinancials = async (vendorId) => {
+	try {
+		// Get all orders for this vendor that are delivered
+		const orders = await Order.find({
+			vendorId: vendorId,
+			status: { $in: ['delivered', 'completed'] }
+		}).sort({ createdAt: -1 }).lean();
+
+		// Calculate totals
+		let totalGrossRevenue = 0;
+		let totalCommissionPaid = 0;
+		let totalCommissionPending = 0;
+		let totalNetEarnings = 0;
+		let codPendingCommission = 0;
+		let digitalPaymentCommission = 0;
+
+		const orderHistory = [];
+
+		for (const order of orders) {
+			const grossAmount = order.subTotal || 0;
+			const commissionAmount = order.commissionAmount || parseFloat((grossAmount * COMMISSION_RATE).toFixed(2));
+			const netEarnings = order.sellerEarnings || parseFloat((grossAmount - commissionAmount).toFixed(2));
+
+			totalGrossRevenue += grossAmount;
+
+			// Check commission status
+			const commissionStatus = order.commissionStatus || 'pending';
+			const paymentMethod = order.paymentMethod || 'COD';
+
+			if (commissionStatus === 'paid' || commissionStatus === 'waived') {
+				totalCommissionPaid += commissionAmount;
+				totalNetEarnings += netEarnings;
+				
+				if (paymentMethod !== 'COD') {
+					digitalPaymentCommission += commissionAmount;
+				}
+			} else {
+				// For COD pending collection
+				totalCommissionPending += commissionAmount;
+				totalNetEarnings += grossAmount; // Seller has full amount until commission collected
+				
+				if (paymentMethod === 'COD') {
+					codPendingCommission += commissionAmount;
+				}
+			}
+
+			orderHistory.push({
+				orderId: order._id,
+				orderNumber: order.orderNumber || order._id.toString().slice(-8).toUpperCase(),
+				date: order.createdAt,
+				status: order.status,
+				paymentMethod: paymentMethod,
+				paymentStatus: order.paymentStatus || 'pending',
+				grossAmount: grossAmount,
+				commissionAmount: commissionAmount,
+				commissionStatus: commissionStatus,
+				netEarnings: netEarnings,
+				buyerName: order.shippingAddress?.fullName || 'N/A'
+			});
+		}
+
+		// Get monthly breakdown for current year
+		const currentYear = new Date().getFullYear();
+		const monthlyBreakdown = {};
+		const months = ['January', 'February', 'March', 'April', 'May', 'June',
+						'July', 'August', 'September', 'October', 'November', 'December'];
+		
+		months.forEach(month => {
+			monthlyBreakdown[month] = {
+				grossRevenue: 0,
+				commissionPaid: 0,
+				commissionPending: 0,
+				netEarnings: 0,
+				orderCount: 0
+			};
+		});
+
+		orders.forEach(order => {
+			const orderDate = new Date(order.createdAt);
+			if (orderDate.getFullYear() === currentYear) {
+				const monthName = months[orderDate.getMonth()];
+				const grossAmount = order.subTotal || 0;
+				const commissionAmount = order.commissionAmount || parseFloat((grossAmount * COMMISSION_RATE).toFixed(2));
+				const commissionStatus = order.commissionStatus || 'pending';
+
+				monthlyBreakdown[monthName].grossRevenue += grossAmount;
+				monthlyBreakdown[monthName].orderCount += 1;
+
+				if (commissionStatus === 'paid' || commissionStatus === 'waived') {
+					monthlyBreakdown[monthName].commissionPaid += commissionAmount;
+					monthlyBreakdown[monthName].netEarnings += (grossAmount - commissionAmount);
+				} else {
+					monthlyBreakdown[monthName].commissionPending += commissionAmount;
+					monthlyBreakdown[monthName].netEarnings += grossAmount;
+				}
+			}
+		});
+
+		return {
+			success: true,
+			summary: {
+				totalGrossRevenue: parseFloat(totalGrossRevenue.toFixed(2)),
+				totalCommissionPaid: parseFloat(totalCommissionPaid.toFixed(2)),
+				totalCommissionPending: parseFloat(totalCommissionPending.toFixed(2)),
+				totalNetEarnings: parseFloat(totalNetEarnings.toFixed(2)),
+				codPendingCommission: parseFloat(codPendingCommission.toFixed(2)),
+				digitalPaymentCommission: parseFloat(digitalPaymentCommission.toFixed(2)),
+				commissionRate: COMMISSION_RATE * 100, // 7%
+				totalOrders: orders.length
+			},
+			monthlyBreakdown,
+			recentOrders: orderHistory.slice(0, 20) // Last 20 orders
+		};
+	} catch (error) {
+		console.error("Get Vendor Financials Error:", error);
+		throw error;
+	}
+};
+
+/**
+ * Get vendor pending COD commission details
+ * Shows orders where vendor needs to remit commission
+ * @param {String} vendorId - The vendor's user ID
+ * @returns {Object} List of pending COD commissions
+ */
+exports.getVendorPendingCODCommissions = async (vendorId) => {
+	try {
+		const orders = await Order.find({
+			vendorId: vendorId,
+			paymentMethod: 'COD',
+			status: { $in: ['delivered', 'completed'] },
+			commissionStatus: { $in: ['pending', null] }
+		}).sort({ createdAt: -1 }).lean();
+
+		const pendingCommissions = orders.map(order => {
+			const grossAmount = order.subTotal || 0;
+			const commissionAmount = order.commissionAmount || parseFloat((grossAmount * COMMISSION_RATE).toFixed(2));
+
+			return {
+				orderId: order._id,
+				orderNumber: order.orderNumber || order._id.toString().slice(-8).toUpperCase(),
+				deliveredDate: order.deliveredAt || order.updatedAt,
+				grossAmount: grossAmount,
+				commissionDue: commissionAmount,
+				buyerName: order.shippingAddress?.fullName || 'N/A',
+				buyerPhone: order.shippingAddress?.phone || 'N/A'
+			};
+		});
+
+		const totalPending = pendingCommissions.reduce((sum, o) => sum + o.commissionDue, 0);
+
+		return {
+			success: true,
+			totalPendingCommission: parseFloat(totalPending.toFixed(2)),
+			pendingOrdersCount: pendingCommissions.length,
+			orders: pendingCommissions
+		};
+	} catch (error) {
+		console.error("Get Vendor Pending COD Commissions Error:", error);
 		throw error;
 	}
 };

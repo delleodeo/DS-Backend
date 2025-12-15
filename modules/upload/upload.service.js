@@ -28,6 +28,68 @@ const tempStorage = new CloudinaryStorage({
 });
 
 /**
+ * Storage configuration for seller application documents
+ * Accepts images (PNG/JPG) and PDF files for all document types
+ */
+const documentStorage = new CloudinaryStorage({
+  cloudinary,
+  params: async (req, file) => {
+    const userId = req.user?.id || req.user?._id;
+    const timestamp = Date.now();
+    const isPdf = file.mimetype === 'application/pdf';
+    
+    // Base config for all documents
+    const config = {
+      folder: `DoroShop-Documents/seller-applications/${userId}`,
+      tags: ['seller-application', userId ? `user-${userId}` : 'temp'],
+      context: `temp=false|user=${userId}|type=seller-document|created=${timestamp}`,
+      public_id: `${file.fieldname}_${timestamp}`,
+      access_mode: 'public',
+    };
+    
+    if (isPdf) {
+      // PDF files - use 'raw' resource type, no transformations
+      return {
+        ...config,
+        resource_type: 'raw',
+        // Don't set format for PDFs - keep original
+      };
+    } else {
+      // Image files - optimize and convert to webp
+      return {
+        ...config,
+        resource_type: 'image',
+        format: 'webp',
+        transformation: [{ width: 1200, height: 1200, crop: 'limit', quality: 'auto:good' }],
+      };
+    }
+  },
+});
+
+const uploadDocuments = multer({
+  storage: documentStorage,
+  limits: { 
+    files: 3, // Max 3 files (gov ID, BIR, DTI/SEC)
+    fileSize: 10 * 1024 * 1024 // 10MB limit per file
+  },
+  fileFilter: (req, file, cb) => {
+    // Accept PNG, JPG images and PDF files for seller documents
+    const allowedMimeTypes = [
+      'image/jpeg', 
+      'image/jpg', 
+      'image/png',
+      'application/pdf'
+    ];
+    
+    if (allowedMimeTypes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only PNG, JPG images and PDF files are allowed for seller documents'), false);
+    }
+  }
+});
+
+/**
  * Storage configuration for permanent uploads
  */
 const permanentStorage = new CloudinaryStorage({
@@ -239,13 +301,64 @@ function extractPublicIdFromUrl(url) {
   }
 }
 
+/**
+ * Generate a signed URL for secure document access
+ * @param {string} publicId - The Cloudinary public_id of the document
+ * @param {string} resourceType - 'image' or 'raw' (for PDFs)
+ * @param {number} expiresIn - Expiration time in seconds (default: 1 hour)
+ * @returns {string} - Signed URL
+ */
+function generateSignedUrl(publicId, resourceType = 'image', expiresIn = 3600) {
+  try {
+    const timestamp = Math.round(Date.now() / 1000) + expiresIn;
+    
+    const options = {
+      type: 'authenticated',
+      sign_url: true,
+      expires_at: timestamp,
+      resource_type: resourceType,
+    };
+    
+    // For PDFs, we need to handle raw resource type
+    if (publicId.includes('.pdf') || resourceType === 'raw') {
+      options.resource_type = 'raw';
+    }
+    
+    return cloudinary.url(publicId, options);
+  } catch (error) {
+    console.error('[Generate Signed URL Error]', error);
+    throw new Error(`Failed to generate signed URL: ${error.message}`);
+  }
+}
+
+/**
+ * Get a public URL for a document (no authentication required for public resources)
+ * @param {string} url - Original Cloudinary URL
+ * @returns {string} - URL suitable for viewing
+ */
+function getDocumentViewUrl(url) {
+  if (!url) return null;
+  
+  // For PDFs uploaded to Cloudinary, ensure proper format
+  if (url.includes('.pdf')) {
+    // PDFs should be accessed directly
+    return url;
+  }
+  
+  // For images, return as-is
+  return url;
+}
+
 module.exports = {
   uploadTemp,
   uploadPermanent,
+  uploadDocuments,
   deleteFromCloudinary,
   deleteBatchFromCloudinary,
   markAsPermanent,
   cleanupOldTempImages,
   extractPublicIdFromUrl,
+  generateSignedUrl,
+  getDocumentViewUrl,
   cloudinary
 };

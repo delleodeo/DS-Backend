@@ -56,6 +56,27 @@ const ProductSchema = new mongoose.Schema({
 	isNew: { type: Boolean, default: true },
 	isHot: { type: Boolean, default: false },
 	isApproved: { type: Boolean, default: false },
+	
+	// Product Approval Status (pending_review, approved, rejected)
+	status: {
+		type: String,
+		enum: ['pending_review', 'approved', 'rejected'],
+		default: 'pending_review'
+	},
+	
+	// Product Approval Workflow (Admin Feature)
+	approvedAt: { type: Date },
+	approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+	rejectedAt: { type: Date },
+	rejectedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+	rejectionReason: { type: String },
+	
+	// Product Disable Feature (Admin Feature)
+	isDisabled: { type: Boolean, default: false },
+	disabledAt: { type: Date },
+	disabledBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+	disableReason: { type: String },
+	
 	reviews: { type: [ReviewSchema], required: false },
 	averageRating: { type: Number, default: 0, min: 0 },
 	numReviews: { type: Number, default: 0, min: 0 },
@@ -63,6 +84,13 @@ const ProductSchema = new mongoose.Schema({
 	municipality: { type: String, required: true },
 	promotion: { type: PromotionSchema, default: () => ({}) },
 });
+
+// Indexes for efficient admin queries
+ProductSchema.index({ isApproved: 1, createdAt: -1 });
+ProductSchema.index({ vendorId: 1, isApproved: 1 });
+ProductSchema.index({ isDisabled: 1 });
+ProductSchema.index({ status: 1, createdAt: -1 });
+ProductSchema.index({ vendorId: 1, status: 1 });
 
 // Virtual for checking if a product has an active promotion
 ProductSchema.virtual('hasPromotion').get(function() {

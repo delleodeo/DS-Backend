@@ -139,3 +139,39 @@ exports.batchResetMonthlyRevenue = async (req, res) => {
 		});
 	}
 };
+
+/**
+ * Get vendor financial summary with commission breakdown
+ * GET /vendor/financials
+ */
+exports.getVendorFinancials = async (req, res) => {
+	try {
+		const vendorId = req.user.id;
+		const result = await vendorService.getVendorFinancials(vendorId);
+		res.status(200).json(result);
+	} catch (err) {
+		console.error("Get Vendor Financials Error:", err);
+		res.status(500).json({
+			success: false,
+			error: err.message || "Failed to get vendor financials"
+		});
+	}
+};
+
+/**
+ * Get vendor pending COD commissions
+ * GET /vendor/pending-commissions
+ */
+exports.getVendorPendingCODCommissions = async (req, res) => {
+	try {
+		const vendorId = req.user.id;
+		const result = await vendorService.getVendorPendingCODCommissions(vendorId);
+		res.status(200).json(result);
+	} catch (err) {
+		console.error("Get Vendor Pending COD Commissions Error:", err);
+		res.status(500).json({
+			success: false,
+			error: err.message || "Failed to get pending COD commissions"
+		});
+	}
+};

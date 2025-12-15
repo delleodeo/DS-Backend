@@ -40,4 +40,18 @@ router.post(
 	vendorController.batchResetMonthlyRevenue
 );
 
+// Financial/Commission routes for vendor dashboard
+router.get(
+	"/financials",
+	protect,
+	restrictTo("vendor", "admin"),
+	vendorController.getVendorFinancials
+);
+router.get(
+	"/pending-commissions",
+	protect,
+	restrictTo("vendor", "admin"),
+	vendorController.getVendorPendingCODCommissions
+);
+
 module.exports = router;

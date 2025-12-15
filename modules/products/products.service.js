@@ -82,8 +82,16 @@ async function invalidateAllProductCaches() {
   }
 
   await redisClient.del(redisKey).catch(() => {});
+  await redisClient.del(`${redisKey}:approved`).catch(() => {});
 
-  console.log(`Deleted key: ${redisKey}`);
+  console.log(`Deleted key: ${redisKey} and ${redisKey}:approved`);
+
+  // Delete approved paginated keys
+  const approvedPaginatedKeys = await redisClient.keys("products:approved:skip:*:limit:*").catch(() => []);
+  if (approvedPaginatedKeys.length) {
+    await redisClient.del(...approvedPaginatedKeys).catch(() => {});
+    console.log(`Deleted ${approvedPaginatedKeys.length} approved paginated keys`);
+  }
 
   const paginatedKeys = await redisClient.keys("products:skip:*:limit:*").catch(() => []);
   if (paginatedKeys.length) {
@@ -91,6 +99,13 @@ async function invalidateAllProductCaches() {
     console.log(`Deleted ${paginatedKeys.length} paginated keys`);
   } else {
     console.log(`No paginated keys found`);
+  }
+
+  // Delete approved category keys
+  const approvedCategoryKeys = await redisClient.keys("products:approved:category:*").catch(() => []);
+  if (approvedCategoryKeys.length) {
+    await redisClient.del(...approvedCategoryKeys).catch(() => {});
+    console.log(`Deleted ${approvedCategoryKeys.length} approved category keys`);
   }
 
   const categoryKeys = await redisClient.keys("products:category:*").catch(() => []);
@@ -120,9 +135,9 @@ async function invalidateAllProductCaches() {
   const vendorKeys = await redisClient.keys("product:vendor:*").catch(() => []);
   if (vendorKeys.length) {
     await redisClient.del(...vendorKeys).catch(() => {});
-    console.log(`Deleted ${municipalityKeys.length} municipality keys`);
+    console.log(`Deleted ${vendorKeys.length} vendor product keys`);
   } else {
-    console.log(`No municipality keys found`);
+    console.log(`No vendor product keys found`);
   }
 
   // Invalidate individual product caches (critical for cart items)
@@ -140,8 +155,15 @@ async function invalidateAllProductCaches() {
   console.log("All product-related caches invalidated successfully!");
 }
 
+// Product status constants
+const PRODUCT_STATUS = {
+  PENDING_REVIEW: 'pending_review',
+  APPROVED: 'approved',
+  REJECTED: 'rejected'
+};
+
 async function getPaginatedProducts(skip, limit) {
-  const redisPageKey = `products:skip:${skip}:limit:${limit}`;
+  const redisPageKey = `products:approved:skip:${skip}:limit:${limit}`;
   let paginatedProducts;
 
   const cache = redisClient && redisClient.isOpen ? await redisClient.get(redisPageKey).catch(() => null) : null;
@@ -149,7 +171,11 @@ async function getPaginatedProducts(skip, limit) {
     console.log("Redis cache hit:", redisPageKey);
     paginatedProducts = JSON.parse(cache);
   } else {
-    paginatedProducts = await Product.find()
+    // Only return approved products for public listing (buyers)
+    paginatedProducts = await Product.find({ 
+      status: PRODUCT_STATUS.APPROVED,
+      isDisabled: { $ne: true }
+    })
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
@@ -158,7 +184,7 @@ async function getPaginatedProducts(skip, limit) {
       await redisClient
         .setEx(redisPageKey, 300, JSON.stringify(paginatedProducts))
         .catch(() => {}); // 5 min TTL
-      console.log(`Cached products page skip=${skip}, limit=${limit}`);
+      console.log(`Cached approved products page skip=${skip}, limit=${limit}`);
     }
   }
 
@@ -187,7 +213,7 @@ async function createProductService(data) {
 
 async function getProductsByCategoryService(category, limit, skip) {
   const normalizeCategory = category.toLowerCase().trim();
-  const cacheKey = `products:category:${normalizeCategory}:limit:${limit}:skip:${skip}`;
+  const cacheKey = `products:approved:category:${normalizeCategory}:limit:${limit}:skip:${skip}`;
 
   const cached = redisClient && redisClient.isOpen ? await redisClient.get(cacheKey).catch(() => null) : null;
   if (cached) {
@@ -196,18 +222,23 @@ async function getProductsByCategoryService(category, limit, skip) {
   }
 
   let allProducts;
-  const allCached = redisClient && redisClient.isOpen ? await redisClient.get(redisKey).catch(() => null) : null;
+  const approvedCacheKey = `${redisKey}:approved`;
+  const allCached = redisClient && redisClient.isOpen ? await redisClient.get(approvedCacheKey).catch(() => null) : null;
 
   if (allCached) {
     allProducts = JSON.parse(allCached);
-    console.log("🗃 Products loaded from Redis: products:all");
+    console.log("🗃 Approved products loaded from Redis");
   } else {
-    allProducts = await Product.find().lean();
+    // Only fetch approved products for public listing
+    allProducts = await Product.find({ 
+      status: PRODUCT_STATUS.APPROVED,
+      isDisabled: { $ne: true }
+    }).lean();
     if (redisClient && redisClient.isOpen) {
       await redisClient
-        .set(redisKey, JSON.stringify(allProducts), { EX: 600 })
+        .set(approvedCacheKey, JSON.stringify(allProducts), { EX: 600 })
         .catch(() => {});
-      console.log("Re-fetched and cached all products from MongoDB");
+      console.log("Re-fetched and cached approved products from MongoDB");
     }
   }
 
@@ -237,7 +268,7 @@ async function getProductsByCategoryService(category, limit, skip) {
 async function getProductByMunicipality(municipality, category, limit, skip) {
   const normalizeMunicipality = municipality.toLowerCase().trim();
   const normalizeCategory = category.toLowerCase().trim();
-  const cacheKey = `products:municipality:${normalizeMunicipality}${category}:limit:${limit}:skip:${skip}`;
+  const cacheKey = `products:approved:municipality:${normalizeMunicipality}:${category}:limit:${limit}:skip:${skip}`;
 
   const cached = redisClient && redisClient.isOpen ? await redisClient.get(cacheKey).catch(() => null) : null;
   if (cached) {
@@ -246,18 +277,23 @@ async function getProductByMunicipality(municipality, category, limit, skip) {
   }
 
   let allProducts;
-  const allCached = redisClient && redisClient.isOpen ? await redisClient.get(redisKey).catch(() => null) : null;
+  const approvedCacheKey = `${redisKey}:approved`;
+  const allCached = redisClient && redisClient.isOpen ? await redisClient.get(approvedCacheKey).catch(() => null) : null;
 
   if (allCached) {
     allProducts = JSON.parse(allCached);
-    console.log("🗃 Products loaded from Redis: products:all");
+    console.log("🗃 Approved products loaded from Redis");
   } else {
-    allProducts = await Product.find().lean();
+    // Only fetch approved products for public listing
+    allProducts = await Product.find({ 
+      status: PRODUCT_STATUS.APPROVED,
+      isDisabled: { $ne: true }
+    }).lean();
     if (redisClient && redisClient.isOpen) {
       await redisClient
-        .set(redisKey, JSON.stringify(allProducts), { EX: 600 })
+        .set(approvedCacheKey, JSON.stringify(allProducts), { EX: 600 })
         .catch(() => {});
-      console.log("Re-fetched and cached all products from MongoDB");
+      console.log("Re-fetched and cached approved products from MongoDB");
     }
   }
 
@@ -326,10 +362,12 @@ async function getRelatedProducts(productId, limit = 6) {
 
   if (categories.length === 0) return [];
 
-  // ✅ Find products that share at least ONE category
+  // ✅ Find products that share at least ONE category (only approved products)
   const related = await Product.find({
     _id: { $ne: _id },
     stock: { $gt: 0 },
+    status: PRODUCT_STATUS.APPROVED,
+    isDisabled: { $ne: true },
     categories: { $in: categories }, // <-- Matches if ANY category overlaps
   })
     .sort({ updatedAt: -1 }) // newest first
@@ -352,22 +390,29 @@ async function searchProductsService(query, limit = 0, skip = 0) {
     "-"
   )}:limit:${limitNum}:skip:${skipNum}`;
 
-  const cached = await redisClient.get(cacheKey);
+  const cached = redisClient && redisClient.isOpen ? await redisClient.get(cacheKey).catch(() => null) : null;
   if (cached) {
     console.log("Redis cache hit:", cacheKey);
     return JSON.parse(cached);
   }
 
   let allProducts;
-  const allCached = await redisClient.get(redisKey);
+  const approvedCacheKey = `${redisKey}:approved`;
+  const allCached = redisClient && redisClient.isOpen ? await redisClient.get(approvedCacheKey).catch(() => null) : null;
 
   if (allCached) {
     allProducts = JSON.parse(allCached);
-    console.log("📦 Products loaded from Redis");
+    console.log("📦 Approved products loaded from Redis");
   } else {
-    allProducts = await Product.find().lean();
-    await redisClient.set(redisKey, JSON.stringify(allProducts), { EX: 600 });
-    console.log("Products reloaded from MongoDB");
+    // Only search approved products for public listing
+    allProducts = await Product.find({ 
+      status: PRODUCT_STATUS.APPROVED,
+      isDisabled: { $ne: true }
+    }).lean();
+    if (redisClient && redisClient.isOpen) {
+      await redisClient.set(approvedCacheKey, JSON.stringify(allProducts), { EX: 600 }).catch(() => {});
+    }
+    console.log("Approved products reloaded from MongoDB");
   }
 
   const results = allProducts.filter((product) => {
