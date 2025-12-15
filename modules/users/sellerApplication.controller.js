@@ -240,6 +240,33 @@ class SellerApplicationController {
       });
     }
   }
+
+  /**
+   * Admin: Create vendor profiles for existing approved sellers
+   * POST /api/seller/admin/create-missing-vendors
+   */
+  async createMissingVendorProfiles(req, res) {
+    try {
+      // Check if user is admin
+      if (req.user.role !== 'admin') {
+        return res.status(403).json({
+          success: false,
+          error: 'Access denied. Admin role required.'
+        });
+      }
+
+      const result = await sellerApplicationService.createMissingVendorProfiles();
+      res.json(result);
+
+    } catch (error) {
+      console.error('Create missing vendor profiles error:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to create missing vendor profiles',
+        details: error.message
+      });
+    }
+  }
 }
 
 module.exports = new SellerApplicationController();

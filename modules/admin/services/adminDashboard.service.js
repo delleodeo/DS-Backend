@@ -239,7 +239,13 @@ class UserManagementService {
 class SellerManagementService {
   static async getAllSellers(filters = {}, pagination = {}) {
     const { page = 1, limit = 20, search, status } = { ...filters, ...pagination };
-    const query = { role: 'vendor' };
+    // Query for users who are vendors OR have submitted seller applications
+    const query = {
+      $or: [
+        { role: 'vendor' },
+        { 'sellerApplication': { $exists: true } }
+      ]
+    };
 
     if (search) {
       query.$or = [
@@ -247,6 +253,13 @@ class SellerManagementService {
         { email: { $regex: search, $options: 'i' } },
         { 'sellerApplication.shopName': { $regex: search, $options: 'i' } }
       ];
+    }
+
+    // Add status filtering
+    if (status === 'active') {
+      query.isRestricted = { $ne: true };
+    } else if (status === 'restricted') {
+      query.isRestricted = true;
     }
 
     const [sellers, total] = await Promise.all([
@@ -258,40 +271,70 @@ class SellerManagementService {
       User.countDocuments(query)
     ]);
 
+    console.log(`Found ${sellers.length} sellers with query:`, JSON.stringify(query));
+
     // Get performance metrics for each seller
     const sellersWithMetrics = await Promise.all(sellers.map(async (seller) => {
-      const vendor = await Vendor.findOne({ userId: seller._id });
-      const vendorId = vendor?._id;
+      try {
+        const vendor = await Vendor.findOne({ userId: seller._id });
+        const vendorId = vendor?._id;
 
-      const [productCount, orders, avgRating] = await Promise.all([
-        vendorId ? Product.countDocuments({ vendorId }) : 0,
-        vendorId ? Order.find({ vendorId }).select('status subTotal') : [],
-        vendorId ? Product.aggregate([
-          { $match: { vendorId, averageRating: { $gt: 0 } } },
-          { $group: { _id: null, avgRating: { $avg: '$averageRating' } } }
-        ]) : []
-      ]);
+        // Query orders by both vendor._id and user._id since vendorId in orders could be either
+        const orderQuery = vendorId 
+          ? { $or: [{ vendorId: vendorId }, { vendorId: seller._id }] }
+          : { vendorId: seller._id };
 
-      const completedOrders = orders.filter(o => o.status === 'delivered').length;
-      const cancelledOrders = orders.filter(o => o.status === 'cancelled').length;
-      const totalRevenue = orders
-        .filter(o => o.status === 'delivered')
-        .reduce((sum, o) => sum + (o.subTotal || 0), 0);
+        const [productCount, orders, avgRating] = await Promise.all([
+          vendorId ? Product.countDocuments({ vendorId: vendorId }) : 0,
+          Order.find(orderQuery).select('status subTotal'),
+          vendorId ? Product.aggregate([
+            { $match: { vendorId: vendorId, averageRating: { $gt: 0 } } },
+            { $group: { _id: null, avgRating: { $avg: '$averageRating' } } }
+          ]) : []
+        ]);
 
-      return {
-        ...seller.toObject(),
-        vendorId,
-        metrics: {
-          totalProducts: productCount,
-          totalOrders: orders.length,
-          completedOrders,
-          cancelledOrders,
-          cancellationRate: orders.length ? ((cancelledOrders / orders.length) * 100).toFixed(2) : 0,
-          totalRevenue,
-          averageRating: avgRating[0]?.avgRating?.toFixed(2) || 0
-        }
-      };
+        const completedOrders = orders.filter(o => o.status === 'delivered').length;
+        const cancelledOrders = orders.filter(o => o.status === 'cancelled').length;
+        const totalRevenue = orders
+          .filter(o => o.status === 'delivered')
+          .reduce((sum, o) => sum + (o.subTotal || 0), 0);
+
+        return {
+          ...seller.toObject(),
+          vendorId,
+          metrics: {
+            totalProducts: productCount,
+            totalOrders: orders.length,
+            completedOrders,
+            cancelledOrders,
+            cancellationRate: orders.length ? ((cancelledOrders / orders.length) * 100).toFixed(2) : 0,
+            totalRevenue,
+            averageRating: avgRating[0]?.avgRating?.toFixed(2) || 0
+          }
+        };
+      } catch (error) {
+        console.error(`Error calculating metrics for seller ${seller._id}:`, error);
+        // Return seller with empty metrics if calculation fails
+        return {
+          ...seller.toObject(),
+          metrics: {
+            totalProducts: 0,
+            totalOrders: 0,
+            completedOrders: 0,
+            cancelledOrders: 0,
+            cancellationRate: 0,
+            totalRevenue: 0,
+            averageRating: 0
+          }
+        };
+      }
     }));
+
+    console.log(`Sample seller with metrics:`, sellersWithMetrics[0] ? {
+      name: sellersWithMetrics[0].name,
+      email: sellersWithMetrics[0].email,
+      metrics: sellersWithMetrics[0].metrics
+    } : 'No sellers found');
 
     return { sellers: sellersWithMetrics, total, page, limit, totalPages: Math.ceil(total / limit) };
   }
@@ -384,7 +427,26 @@ class ProductManagementService {
       query.status = 'rejected';
     }
     if (vendorId) query.vendorId = vendorId;
-    if (category) query.categories = category;
+    
+    // Handle category filtering - convert category ID to category name
+    if (category) {
+      try {
+        // Check if it's a valid ObjectId (category ID)
+        if (category.match(/^[0-9a-fA-F]{24}$/)) {
+          const categoryDoc = await Category.findById(category);
+          if (categoryDoc) {
+            query.categories = categoryDoc.name;
+          }
+        } else {
+          // If it's not an ObjectId, assume it's a category name
+          query.categories = category;
+        }
+      } catch (err) {
+        console.warn('Category filter error:', err);
+        // If there's an error, try using it as a name directly
+        query.categories = category;
+      }
+    }
 
     const [products, total] = await Promise.all([
       Product.find(query)
@@ -917,8 +979,9 @@ class OrderCommissionService {
 class AnalyticsService {
   static async getDashboardStats() {
     const now = new Date();
-    const startOfToday = new Date(now.setHours(0, 0, 0, 0));
-    const startOfWeek = new Date(now.setDate(now.getDate() - now.getDay()));
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const startOfWeek = new Date(startOfToday);
+    startOfWeek.setDate(startOfWeek.getDate() - startOfWeek.getDay());
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
     const [
@@ -931,18 +994,26 @@ class AnalyticsService {
       todayOrders,
       weekOrders,
       monthOrders,
-      completedOrders
+      completedOrders,
+      pendingRefunds,
+      recentOrdersData,
+      recentUsersData,
+      pendingCommissionOrders
     ] = await Promise.all([
       User.countDocuments({ role: 'user' }),
       User.countDocuments({ role: 'vendor' }),
       Product.countDocuments(),
       Order.countDocuments(),
       User.countDocuments({ 'sellerApplication.status': 'pending' }),
-      Product.countDocuments({ isApproved: false }),
+      Product.countDocuments({ $or: [{ status: 'pending_review' }, { isApproved: false, status: { $exists: false } }] }),
       Order.countDocuments({ createdAt: { $gte: startOfToday } }),
       Order.countDocuments({ createdAt: { $gte: startOfWeek } }),
       Order.countDocuments({ createdAt: { $gte: startOfMonth } }),
-      Order.find({ status: 'delivered' }).select('subTotal createdAt')
+      Order.find({ status: 'delivered' }).select('subTotal createdAt'),
+      RefundRequest ? RefundRequest.countDocuments({ status: 'pending' }).catch(() => 0) : 0,
+      Order.find().sort({ createdAt: -1 }).limit(5).populate('customerId', 'name email').select('orderId status totalAmount createdAt'),
+      User.find().sort({ createdAt: -1 }).limit(5).select('name email role createdAt'),
+      Order.find({ status: { $in: ['pending', 'processing', 'shipped'] } }).select('subTotal')
     ]);
 
     const totalRevenue = completedOrders.reduce((sum, o) => sum + (o.subTotal || 0), 0);
@@ -957,6 +1028,27 @@ class AnalyticsService {
       .reduce((sum, o) => sum + (o.subTotal || 0), 0);
 
     const platformCommission = totalRevenue * 0.07;
+    const pendingRevenue = pendingCommissionOrders.reduce((sum, o) => sum + (o.subTotal || 0), 0);
+    const pendingCommission = pendingRevenue * 0.07;
+
+    // Format recent orders for frontend
+    const recentOrders = recentOrdersData.map(order => ({
+      _id: order._id,
+      orderId: order.orderId,
+      status: order.status,
+      totalAmount: order.totalAmount || order.subTotal,
+      user: order.customerId ? { name: order.customerId.name, email: order.customerId.email } : null,
+      createdAt: order.createdAt
+    }));
+
+    // Format recent users for frontend
+    const recentUsers = recentUsersData.map(user => ({
+      _id: user._id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      createdAt: user.createdAt
+    }));
 
     return {
       users: { total: totalUsers, sellers: totalSellers },
@@ -973,12 +1065,16 @@ class AnalyticsService {
         today: todayRevenue,
         thisWeek: weekRevenue,
         thisMonth: monthRevenue,
-        platformCommission
+        platformCommission,
+        pendingCommission
       },
       pendingActions: {
         sellerApplications: pendingApplications,
-        productApprovals: pendingProducts
-      }
+        productApprovals: pendingProducts,
+        refunds: pendingRefunds
+      },
+      recentOrders,
+      recentUsers
     };
   }
 

@@ -1,4 +1,5 @@
 const User = require('./users.model');
+const Vendor = require('../vendors/vendors.model');
 const { deleteFromCloudinary } = require('../upload/upload.service');
 
 class SellerApplicationService {
@@ -200,9 +201,49 @@ class SellerApplicationService {
         user.sellerApplication.rejectionReason = rejectionReason;
       }
 
-      // If approved, upgrade user role to vendor
+      // If approved, upgrade user role to vendor and create vendor profile
       if (decision === 'approved') {
         user.role = 'vendor';
+        
+        // Check if vendor profile already exists
+        const existingVendor = await Vendor.findOne({ userId: user._id });
+        
+        if (!existingVendor) {
+          // Create vendor profile from application data
+          const vendorData = {
+            userId: user._id,
+            storeName: user.sellerApplication.shopName,
+            address: {
+              street: user.sellerApplication.shopAddress || '',
+              barangay: user.address?.barangay || '',
+              city: user.address?.city || '',
+              province: user.address?.province || '',
+              zipCode: user.address?.zipCode || ''
+            },
+            phoneNumber: user.phone || '',
+            isApproved: true,
+            documentsSubmitted: true,
+            documents: [
+              user.sellerApplication.governmentIdUrl,
+              user.sellerApplication.birTinUrl,
+              user.sellerApplication.dtiOrSecUrl
+            ].filter(Boolean), // Remove empty values
+            // Initialize dashboard stats
+            totalProducts: 0,
+            totalOrders: 0,
+            totalRevenue: 0,
+            profileViews: 0,
+            productClicks: 0,
+            currentMonthlyRevenue: 0
+          };
+          
+          const vendor = new Vendor(vendorData);
+          await vendor.save();
+          
+          console.log(`✅ Created vendor profile for user ${user.name} (${user.email})`);
+        } else {
+          console.log(`Vendor profile already exists for user ${user.name} (${user.email})`);
+        }
       }
 
       await user.save();
@@ -383,6 +424,85 @@ class SellerApplicationService {
     }
 
     return errors;
+  }
+
+  /**
+   * Create vendor profiles for existing approved sellers who don't have them
+   * This is a utility method to fix existing data
+   */
+  async createMissingVendorProfiles() {
+    try {
+      // Find users with approved seller applications but no vendor profile
+      const approvedUsers = await User.find({
+        $or: [
+          { role: 'vendor' },
+          { 'sellerApplication.status': 'approved' }
+        ]
+      });
+
+      let created = 0;
+      let existing = 0;
+
+      for (const user of approvedUsers) {
+        // Check if vendor profile exists
+        const existingVendor = await Vendor.findOne({ userId: user._id });
+        
+        if (existingVendor) {
+          existing++;
+          continue;
+        }
+
+        // Create vendor profile
+        const vendorData = {
+          userId: user._id,
+          storeName: user.sellerApplication?.shopName || user.name || 'Unknown Store',
+          address: {
+            street: user.sellerApplication?.shopAddress || '',
+            barangay: user.address?.barangay || '',
+            city: user.address?.city || '',
+            province: user.address?.province || '',
+            zipCode: user.address?.zipCode || ''
+          },
+          phoneNumber: user.phone || '',
+          isApproved: true,
+          documentsSubmitted: !!user.sellerApplication?.governmentIdUrl,
+          documents: [
+            user.sellerApplication?.governmentIdUrl,
+            user.sellerApplication?.birTinUrl,
+            user.sellerApplication?.dtiOrSecUrl
+          ].filter(Boolean),
+          totalProducts: 0,
+          totalOrders: 0,
+          totalRevenue: 0,
+          profileViews: 0,
+          productClicks: 0,
+          currentMonthlyRevenue: 0
+        };
+        
+        const vendor = new Vendor(vendorData);
+        await vendor.save();
+        
+        // Ensure user role is set to vendor
+        if (user.role !== 'vendor') {
+          user.role = 'vendor';
+          await user.save();
+        }
+        
+        created++;
+        console.log(`✅ Created missing vendor profile for ${user.name} (${user.email})`);
+      }
+
+      return {
+        success: true,
+        message: `Created ${created} vendor profiles, ${existing} already existed`,
+        created,
+        existing
+      };
+
+    } catch (error) {
+      console.error('Error creating missing vendor profiles:', error);
+      throw error;
+    }
   }
 }
 

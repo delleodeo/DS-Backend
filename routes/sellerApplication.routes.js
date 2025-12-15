@@ -105,4 +105,11 @@ router.get('/admin/pending', protect, sellerApplicationController.getPendingAppl
  */
 router.put('/admin/review/:userId', protect, sellerApplicationController.reviewApplication);
 
+/**
+ * @route   POST /api/seller/admin/create-missing-vendors
+ * @desc    Create vendor profiles for existing approved sellers
+ * @access  Private (Admin)
+ */
+router.post('/admin/create-missing-vendors', protect, sellerApplicationController.createMissingVendorProfiles);
+
 module.exports = router;
