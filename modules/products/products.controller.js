@@ -13,6 +13,7 @@ const {
   getRelatedProducts,
   removeVariant,
   getProductByVendor,
+  getVendorOwnProducts,
   addSingleOption,
   addProductStockMain
 } = require("./products.service.js");
@@ -67,6 +68,27 @@ module.exports = {
       res.status(200).json(vendorProducts);
     } catch (error) {
       console.log(error);
+    }
+  },
+
+  // GET /products/vendor/:id/own - Get all vendor's own products (including pending/rejected)
+  async getVendorOwnProductsController(req, res) {
+    try {
+      const limit = req.query.limit;
+      const skip = req.query.skip | 0;
+      const { id } = req.params;
+
+      // Verify the requesting user is the vendor
+      if (req.user.id !== id) {
+        return res.status(403).json({ message: 'Access denied. You can only view your own products.' });
+      }
+
+      const vendorProducts = await getVendorOwnProducts(id, limit, skip);
+
+      res.status(200).json(vendorProducts);
+    } catch (error) {
+      console.log(error);
+      res.status(500).json({ message: error.message });
     }
   },
 

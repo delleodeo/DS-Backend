@@ -3,21 +3,55 @@ const mongoose = require('mongoose');
 const BannerSchema = new mongoose.Schema({
   title: {
     type: String,
-    required: true,
-    trim: true
+    required: false,
+    trim: true,
+    default: ''
   },
   subtitle: String,
   
-  // Image
+  // Background Type - gradient, image, or glassmorphism
+  backgroundType: {
+    type: String,
+    enum: ['gradient', 'image', 'glassmorphism'],
+    default: 'gradient'
+  },
+  
+  // Gradient color (used when backgroundType is 'gradient' or 'glassmorphism')
+  gradientColor: {
+    type: String,
+    default: 'linear-gradient(135deg, #cfee7a 0%, #f8cf2a 50%, #ffa726 100%)'
+  },
+  
+  // Background Image (used when backgroundType is 'image')
   imageUrl: {
     type: String,
-    required: true
+    required: false  // Not required since we can use gradient
   },
   imagePublicId: String,
+  
+  // Product/decorative image (optional, shown on banner)
+  productImageUrl: String,
+  productImagePublicId: String,
   
   // Mobile-specific image (optional)
   mobileImageUrl: String,
   mobileImagePublicId: String,
+  
+  // Button Settings
+  hasButton: {
+    type: Boolean,
+    default: true
+  },
+  buttonText: {
+    type: String,
+    default: 'Shop Now'
+  },
+  
+  // Background Only Mode - shows just the background with no content overlay
+  backgroundOnly: {
+    type: Boolean,
+    default: false
+  },
   
   // Link/Action
   linkUrl: String,

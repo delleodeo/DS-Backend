@@ -10,8 +10,49 @@ const { json } = require("express");
 
 const getCacheKey = (userId) => `cart:${userId}`;
 
+/**
+ * Get available stock for a product/option
+ */
+const getAvailableStock = async (productId, optionId) => {
+  const product = await Product.findById(productId);
+  if (!product) throw new Error("Product not found");
+  
+  // If optionId is provided, get stock from the specific option
+  if (optionId && product.option && product.option.length > 0) {
+    const option = product.option.find(opt => String(opt._id) === String(optionId));
+    if (option) {
+      return option.stock || 0;
+    }
+  }
+  
+  // Otherwise return product-level stock
+  return product.stock || 0;
+};
+
 exports.addToCartService = async (userId, item) => {
+  // Check stock before adding
+  const availableStock = await getAvailableStock(item.productId, item.optionId);
+  
   let cart = await Cart.findOne({ userId });
+  let existingQuantity = 0;
+  
+  if (cart) {
+    const existingItem = cart.items.find(
+      (i) =>
+        i.productId.equals(item.productId) &&
+        String(i.optionId) === String(item.optionId)
+    );
+    if (existingItem) {
+      existingQuantity = existingItem.quantity;
+    }
+  }
+  
+  const totalQuantity = existingQuantity + item.quantity;
+  
+  if (totalQuantity > availableStock) {
+    throw new Error(`Only ${availableStock} items available in stock. You already have ${existingQuantity} in cart.`);
+  }
+  
   if (!cart) {
     cart = new Cart({ userId, items: [item] });
   } else {
@@ -60,8 +101,26 @@ exports.updateCartItemService = async (userId, item) => {
   );
 
   if (existingItem) {
-    existingItem.quantity += item.quantity;
+    const newQuantity = existingItem.quantity + item.quantity;
+    
+    // Check stock before updating
+    const availableStock = await getAvailableStock(item.productId, item.optionId);
+    
+    if (newQuantity > availableStock) {
+      throw new Error(`Only ${availableStock} items available in stock.`);
+    }
+    
+    if (newQuantity < 1) {
+      throw new Error("Quantity cannot be less than 1");
+    }
+    
+    existingItem.quantity = newQuantity;
   } else {
+    // Adding new item - check stock
+    const availableStock = await getAvailableStock(item.productId, item.optionId);
+    if (item.quantity > availableStock) {
+      throw new Error(`Only ${availableStock} items available in stock.`);
+    }
     cart.items.push(item);
   }
 

@@ -539,8 +539,24 @@ exports.getAllCategories = async (req, res) => {
 
 exports.createCategory = async (req, res) => {
   try {
+    // Debug: Log what we receive
+    console.log('Create Category - req.body:', req.body);
+    console.log('Create Category - req.file:', req.file);
+    
+    // Handle file upload - if image was uploaded via multer, get URL from Cloudinary
+    const categoryData = { ...req.body };
+    if (req.file) {
+      categoryData.imageUrl = req.file.path; // Cloudinary URL
+      categoryData.imagePublicId = req.file.filename; // Cloudinary public_id
+    }
+    
+    // Validate required fields
+    if (!categoryData.name) {
+      return res.status(400).json({ success: false, error: 'Category name is required' });
+    }
+    
     const category = await CategoryService.createCategory(
-      req.body,
+      categoryData,
       req.user.id,
       req.user.email,
       req
@@ -554,9 +570,24 @@ exports.createCategory = async (req, res) => {
 
 exports.updateCategory = async (req, res) => {
   try {
+    // Debug: Log what we receive
+    console.log('Update Category - req.body:', req.body);
+    console.log('Update Category - req.file:', req.file);
+    
+    // Handle file upload - if image was uploaded via multer, get URL from Cloudinary
+    const updateData = { ...req.body };
+    if (req.file) {
+      updateData.imageUrl = req.file.path; // Cloudinary URL
+      updateData.imagePublicId = req.file.filename; // Cloudinary public_id
+    } else if (updateData.existingImageUrl) {
+      // Keep existing image URL if no new image uploaded
+      updateData.imageUrl = updateData.existingImageUrl;
+      delete updateData.existingImageUrl;
+    }
+    
     const category = await CategoryService.updateCategory(
       req.params.categoryId,
-      req.body,
+      updateData,
       req.user.id,
       req.user.email,
       req
@@ -632,8 +663,57 @@ exports.getActiveBanners = async (req, res) => {
 
 exports.createBanner = async (req, res) => {
   try {
+    // Debug: Log what we receive
+    console.log('Create Banner - req.body:', req.body);
+    console.log('Create Banner - req.files:', req.files);
+    
+    // Handle file upload - with .fields() we get req.files object
+    const bannerData = { ...req.body };
+    
+    // Handle background image
+    if (req.files && req.files.image && req.files.image[0]) {
+      bannerData.imageUrl = req.files.image[0].path; // Cloudinary URL
+      bannerData.imagePublicId = req.files.image[0].filename; // Cloudinary public_id
+    }
+    
+    // Handle product image
+    if (req.files && req.files.productImage && req.files.productImage[0]) {
+      bannerData.productImageUrl = req.files.productImage[0].path;
+      bannerData.productImagePublicId = req.files.productImage[0].filename;
+    }
+    
+    // Map frontend field names to model field names
+    if (bannerData.link) {
+      bannerData.linkUrl = bannerData.link;
+      delete bannerData.link;
+    }
+    if (bannerData.position) {
+      bannerData.displayOrder = parseInt(bannerData.position);
+      delete bannerData.position;
+    }
+    
+    // Convert hasButton string to boolean
+    if (bannerData.hasButton !== undefined) {
+      bannerData.hasButton = bannerData.hasButton === 'true' || bannerData.hasButton === true;
+    }
+    
+    // Convert isActive string to boolean  
+    if (bannerData.isActive !== undefined) {
+      bannerData.isActive = bannerData.isActive === 'true' || bannerData.isActive === true;
+    }
+    
+    // Convert backgroundOnly string to boolean
+    if (bannerData.backgroundOnly !== undefined) {
+      bannerData.backgroundOnly = bannerData.backgroundOnly === 'true' || bannerData.backgroundOnly === true;
+    }
+    
+    // For image background type, require an image (unless editing with existing image)
+    if (bannerData.backgroundType === 'image' && !bannerData.imageUrl) {
+      return res.status(400).json({ success: false, error: 'Background image is required for image-type banner' });
+    }
+    
     const banner = await BannerService.createBanner(
-      req.body,
+      bannerData,
       req.user.id,
       req.user.email,
       req
@@ -647,9 +727,60 @@ exports.createBanner = async (req, res) => {
 
 exports.updateBanner = async (req, res) => {
   try {
+    // Debug: Log what we receive
+    console.log('Update Banner - req.body:', req.body);
+    console.log('Update Banner - req.files:', req.files);
+    
+    // Handle file upload - with .fields() we get req.files object
+    const updateData = { ...req.body };
+    
+    // Handle background image
+    if (req.files && req.files.image && req.files.image[0]) {
+      updateData.imageUrl = req.files.image[0].path;
+      updateData.imagePublicId = req.files.image[0].filename;
+    } else if (updateData.existingImageUrl) {
+      // Keep existing image URL if no new image uploaded
+      updateData.imageUrl = updateData.existingImageUrl;
+      delete updateData.existingImageUrl;
+    }
+    
+    // Handle product image
+    if (req.files && req.files.productImage && req.files.productImage[0]) {
+      updateData.productImageUrl = req.files.productImage[0].path;
+      updateData.productImagePublicId = req.files.productImage[0].filename;
+    } else if (updateData.existingProductImageUrl) {
+      updateData.productImageUrl = updateData.existingProductImageUrl;
+      delete updateData.existingProductImageUrl;
+    }
+    
+    // Map frontend field names to model field names
+    if (updateData.link) {
+      updateData.linkUrl = updateData.link;
+      delete updateData.link;
+    }
+    if (updateData.position) {
+      updateData.displayOrder = parseInt(updateData.position);
+      delete updateData.position;
+    }
+    
+    // Convert hasButton string to boolean
+    if (updateData.hasButton !== undefined) {
+      updateData.hasButton = updateData.hasButton === 'true' || updateData.hasButton === true;
+    }
+    
+    // Convert isActive string to boolean
+    if (updateData.isActive !== undefined) {
+      updateData.isActive = updateData.isActive === 'true' || updateData.isActive === true;
+    }
+    
+    // Convert backgroundOnly string to boolean
+    if (updateData.backgroundOnly !== undefined) {
+      updateData.backgroundOnly = updateData.backgroundOnly === 'true' || updateData.backgroundOnly === true;
+    }
+    
     const banner = await BannerService.updateBanner(
       req.params.bannerId,
-      req.body,
+      updateData,
       req.user.id,
       req.user.email,
       req
@@ -942,5 +1073,76 @@ exports.getAuditLogs = async (req, res) => {
   } catch (error) {
     console.error('Get Audit Logs Error:', error);
     res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// ============================================
+// MUNICIPALITY MANAGEMENT
+// ============================================
+const { MunicipalityService } = require('../services/adminDashboard.service');
+
+exports.getAllMunicipalities = async (req, res) => {
+  try {
+    const municipalities = await MunicipalityService.getAllMunicipalities();
+    res.json({ success: true, data: municipalities });
+  } catch (error) {
+    console.error('Get Municipalities Error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+exports.getActiveMunicipalities = async (req, res) => {
+  try {
+    const municipalities = await MunicipalityService.getActiveMunicipalities();
+    res.json({ success: true, data: municipalities });
+  } catch (error) {
+    console.error('Get Active Municipalities Error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+exports.createMunicipality = async (req, res) => {
+  try {
+    const municipality = await MunicipalityService.createMunicipality(
+      req.body,
+      req.user.id,
+      req.user.email,
+      req
+    );
+    res.status(201).json({ success: true, message: 'Municipality created successfully', data: municipality });
+  } catch (error) {
+    console.error('Create Municipality Error:', error);
+    res.status(400).json({ success: false, error: error.message });
+  }
+};
+
+exports.updateMunicipality = async (req, res) => {
+  try {
+    const municipality = await MunicipalityService.updateMunicipality(
+      req.params.id,
+      req.body,
+      req.user.id,
+      req.user.email,
+      req
+    );
+    res.json({ success: true, message: 'Municipality updated successfully', data: municipality });
+  } catch (error) {
+    console.error('Update Municipality Error:', error);
+    res.status(400).json({ success: false, error: error.message });
+  }
+};
+
+exports.deleteMunicipality = async (req, res) => {
+  try {
+    const result = await MunicipalityService.deleteMunicipality(
+      req.params.id,
+      req.user.id,
+      req.user.email,
+      req
+    );
+    res.json({ success: true, ...result });
+  } catch (error) {
+    console.error('Delete Municipality Error:', error);
+    res.status(400).json({ success: false, error: error.message });
   }
 };

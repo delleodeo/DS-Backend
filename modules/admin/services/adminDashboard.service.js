@@ -4,6 +4,7 @@ const Product = require('../../products/products.model');
 const Order = require('../../orders/orders.model');
 const Vendor = require('../../vendors/vendors.model');
 const Admin = require('../admin.model');
+const Municipality = require('../models/municipality.model');
 const {
   AuditLog,
   SystemSettings,
@@ -284,13 +285,27 @@ class SellerManagementService {
           ? { $or: [{ vendorId: vendorId }, { vendorId: seller._id }] }
           : { vendorId: seller._id };
 
+        // Product query: try both vendor._id and user._id since products might reference either
+        // Only count APPROVED products
+        const productQuery = vendorId 
+          ? { 
+              $or: [{ vendorId: vendorId }, { vendorId: seller._id }],
+              status: 'approved',
+              isDisabled: { $ne: true }
+            }
+          : { 
+              vendorId: seller._id,
+              status: 'approved',
+              isDisabled: { $ne: true }
+            };
+
         const [productCount, orders, avgRating] = await Promise.all([
-          vendorId ? Product.countDocuments({ vendorId: vendorId }) : 0,
+          Product.countDocuments(productQuery),
           Order.find(orderQuery).select('status subTotal'),
-          vendorId ? Product.aggregate([
-            { $match: { vendorId: vendorId, averageRating: { $gt: 0 } } },
+          Product.aggregate([
+            { $match: { ...productQuery, averageRating: { $gt: 0 } } },
             { $group: { _id: null, avgRating: { $avg: '$averageRating' } } }
-          ]) : []
+          ])
         ]);
 
         const completedOrders = orders.filter(o => o.status === 'delivered').length;
@@ -346,8 +361,9 @@ class SellerManagementService {
     const vendor = await Vendor.findOne({ userId: sellerId });
     if (!vendor) throw new Error('Vendor profile not found');
 
-    const [products, orders, reviews] = await Promise.all([
+    const [products, approvedProducts, orders, reviews] = await Promise.all([
       Product.find({ vendorId: vendor._id }),
+      Product.find({ vendorId: vendor._id, status: 'approved', isDisabled: { $ne: true } }),
       Order.find({ vendorId: vendor._id }),
       Product.aggregate([
         { $match: { vendorId: vendor._id } },
@@ -374,9 +390,10 @@ class SellerManagementService {
       seller: user.toObject(),
       vendor: vendor.toObject(),
       performance: {
-        totalProducts: products.length,
-        activeProducts: products.filter(p => p.isApproved).length,
-        pendingProducts: products.filter(p => !p.isApproved).length,
+        totalProducts: approvedProducts.length,  // Show only approved
+        activeProducts: approvedProducts.length, // Same as approved
+        pendingProducts: products.filter(p => p.status === 'pending_review' || (!p.status && !p.isApproved)).length,
+        rejectedProducts: products.filter(p => p.status === 'rejected').length,
         totalOrders: orders.length,
         completedOrders: completedOrders.length,
         cancelledOrders: cancelledOrders.length,
@@ -405,27 +422,41 @@ class ProductManagementService {
   static async getAllProducts(filters = {}, pagination = {}) {
     const { page = 1, limit = 20, search, status, vendorId, category } = { ...filters, ...pagination };
     const query = {};
+    const conditions = []; // Use $and to combine search and status conditions
 
+    // Search condition
     if (search) {
-      query.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { description: { $regex: search, $options: 'i' } }
-      ];
+      conditions.push({
+        $or: [
+          { name: { $regex: search, $options: 'i' } },
+          { description: { $regex: search, $options: 'i' } }
+        ]
+      });
     }
     // Support both old isApproved and new status field
     if (status === 'pending' || status === 'pending_review') {
-      query.$or = [
-        { status: 'pending_review' },
-        { isApproved: false, status: { $exists: false } }
-      ];
+      conditions.push({
+        $or: [
+          { status: 'pending_review' },
+          { isApproved: false, status: { $exists: false } }
+        ]
+      });
     } else if (status === 'approved') {
-      query.$or = [
-        { status: 'approved' },
-        { isApproved: true, status: { $exists: false } }
-      ];
+      conditions.push({
+        $or: [
+          { status: 'approved' },
+          { isApproved: true, status: { $exists: false } }
+        ]
+      });
     } else if (status === 'rejected') {
       query.status = 'rejected';
     }
+    
+    // Combine conditions with $and if there are multiple
+    if (conditions.length > 0) {
+      query.$and = conditions;
+    }
+    
     if (vendorId) query.vendorId = vendorId;
     
     // Handle category filtering - convert category ID to category name
@@ -988,6 +1019,7 @@ class AnalyticsService {
       totalUsers,
       totalSellers,
       totalProducts,
+      approvedProducts,
       totalOrders,
       pendingApplications,
       pendingProducts,
@@ -1003,6 +1035,7 @@ class AnalyticsService {
       User.countDocuments({ role: 'user' }),
       User.countDocuments({ role: 'vendor' }),
       Product.countDocuments(),
+      Product.countDocuments({ status: 'approved', isDisabled: { $ne: true } }),
       Order.countDocuments(),
       User.countDocuments({ 'sellerApplication.status': 'pending' }),
       Product.countDocuments({ $or: [{ status: 'pending_review' }, { isApproved: false, status: { $exists: false } }] }),
@@ -1052,7 +1085,7 @@ class AnalyticsService {
 
     return {
       users: { total: totalUsers, sellers: totalSellers },
-      products: { total: totalProducts, pendingApproval: pendingProducts },
+      products: { total: totalProducts, approved: approvedProducts, pendingApproval: pendingProducts },
       orders: { 
         total: totalOrders, 
         today: todayOrders, 
@@ -1594,6 +1627,68 @@ class SystemSettingsService {
   }
 }
 
+// ============================================
+// MUNICIPALITY SERVICE
+// ============================================
+class MunicipalityService {
+  static async getAllMunicipalities() {
+    return await Municipality.find().sort({ name: 1 });
+  }
+
+  static async getActiveMunicipalities() {
+    return await Municipality.find({ isActive: true }).sort({ name: 1 });
+  }
+
+  static async createMunicipality(data, adminId, adminEmail, req) {
+    const municipality = new Municipality(data);
+    await municipality.save();
+
+    await AuditService.log(adminId, adminEmail, 'MUNICIPALITY_CREATED', 'Municipality', municipality._id, {
+      newValues: data
+    }, req);
+
+    return municipality;
+  }
+
+  static async updateMunicipality(id, data, adminId, adminEmail, req) {
+    const municipality = await Municipality.findById(id);
+    if (!municipality) {
+      throw new Error('Municipality not found');
+    }
+
+    const previousValues = {
+      name: municipality.name,
+      province: municipality.province,
+      isActive: municipality.isActive
+    };
+
+    Object.assign(municipality, data);
+    await municipality.save();
+
+    await AuditService.log(adminId, adminEmail, 'MUNICIPALITY_UPDATED', 'Municipality', id, {
+      previousValues,
+      newValues: data
+    }, req);
+
+    return municipality;
+  }
+
+  static async deleteMunicipality(id, adminId, adminEmail, req) {
+    const municipality = await Municipality.findById(id);
+    if (!municipality) {
+      throw new Error('Municipality not found');
+    }
+
+    await Municipality.findByIdAndDelete(id);
+
+    await AuditService.log(adminId, adminEmail, 'MUNICIPALITY_DELETED', 'Municipality', id, {
+      previousValues: { name: municipality.name, province: municipality.province }
+    }, req);
+
+    return { message: 'Municipality deleted successfully' };
+  }
+}
+
 // Export all services
 module.exports = {
   AuditService,
@@ -1606,5 +1701,6 @@ module.exports = {
   BannerService,
   AnnouncementService,
   RefundService,
-  SystemSettingsService
+  SystemSettingsService,
+  MunicipalityService
 };

@@ -23,7 +23,10 @@ router.post("/:productId/options", productController.addOptionController);
 router.get("/municipality/:municipality", productController.getByMunicipalityController);
 router.get("/:id/related", productController.getRelatedProductsController);
 router.get("/search", productController.searchProductsController);
+// Public endpoint - returns only approved products for a vendor (for buyers viewing store)
 router.get("/vendor/:id", productController.getVendorProductsController);
+// Protected endpoint - returns ALL vendor's own products including pending/rejected (for vendor dashboard)
+router.get("/vendor/:id/own", protect, productController.getVendorOwnProductsController);
 router.get("/:id", productController.getProductByIdController);
 router.put("/:id", productController.updateProductController);
 router.delete("/:id", productController.deleteProductController);

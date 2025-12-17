@@ -126,29 +126,60 @@ exports.getVendorDetails = async (vendorId) => {
 
 		const vendor = await Vendor.findOne({ userId: vendorId })
 			.select(
-				"address storeName followers rating numRatings userId totalProducts imageUrl"
+				"address storeName followers rating numRatings userId totalProducts totalOrders totalRevenue imageUrl description phoneNumber createdAt"
 			)
-			.populate("followers", "name email"); // Populate followers if you want details, or remove this if just IDs
-
-		if (isRedisAvailable()) {
-			await redisClient.set(
-				getVendorDetailsKey(vendorId),
-				JSON.stringify(vendor),
-				{ EX: 300 }
-			);
-		}
+			.populate("followers", "name email _id");
 
 		if (!vendor) {
 			throw new Error("Vendor not found");
 		}
 
-		return vendor;
+		// Get count of approved products only
+		const Product = require('../products/products.model');
+		const approvedProductCount = await Product.countDocuments({
+			vendor: vendorId,
+			status: 'approved',
+			isDisabled: { $ne: true }
+		});
+
+		// Get total completed orders (actual sales count)
+		const Order = require('../orders/orders.model');
+		const completedOrders = await Order.countDocuments({
+			vendor: vendorId,
+			status: { $in: ['completed', 'delivered'] }
+		});
+
+		// Get total reviews for this vendor's products
+		const Review = require('../reviews/reviews.model');
+		const totalReviews = await Review.countDocuments({
+			vendor: vendorId
+		});
+
+		// Build enriched vendor data
+		const vendorData = vendor.toObject();
+		vendorData.approvedProducts = approvedProductCount;
+		vendorData.totalSales = completedOrders;
+		vendorData.totalReviews = totalReviews;
+		vendorData.responseRate = 95; // Default, can be calculated from message data
+		vendorData.responseTime = 'Within 1 hour'; // Default, can be calculated
+		vendorData.isVerified = vendor.isApproved !== false;
+
+		if (isRedisAvailable()) {
+			await redisClient.set(
+				getVendorDetailsKey(vendorId),
+				JSON.stringify(vendorData),
+				{ EX: 300 }
+			);
+		}
+
+		return vendorData;
 	} catch (error) {
+		console.error('getVendorDetails error:', error);
 		const vendor = await Vendor.findOne({ userId: vendorId })
 			.select(
-				"address storeName followers rating numRatings userId totalProducts imageUrl"
+				"address storeName followers rating numRatings userId totalProducts totalOrders totalRevenue imageUrl description phoneNumber createdAt"
 			)
-			.populate("followers", "name email");
+			.populate("followers", "name email _id");
 		return vendor;
 	}
 };

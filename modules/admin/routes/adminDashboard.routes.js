@@ -3,6 +3,7 @@ const express = require('express');
 const router = express.Router();
 const adminController = require('../controllers/adminDashboard.controller');
 const { protect, restrictTo } = require('../../../auth/auth.controller');
+const { uploadTemp } = require('../../upload/upload.service');
 
 // All routes require admin authentication
 router.use(protect);
@@ -70,8 +71,8 @@ router.post('/commission/:orderId/waive', adminController.waiveCommission);
 // CATEGORIES
 // ============================================
 router.get('/categories', adminController.getAllCategories);
-router.post('/categories', adminController.createCategory);
-router.put('/categories/:categoryId', adminController.updateCategory);
+router.post('/categories', uploadTemp.single('image'), adminController.createCategory);
+router.put('/categories/:categoryId', uploadTemp.single('image'), adminController.updateCategory);
 router.delete('/categories/:categoryId', adminController.deleteCategory);
 router.post('/categories/:categoryId/toggle', adminController.toggleCategoryStatus);
 
@@ -80,8 +81,14 @@ router.post('/categories/:categoryId/toggle', adminController.toggleCategoryStat
 // ============================================
 router.get('/banners', adminController.getAllBanners);
 router.get('/banners/active', adminController.getActiveBanners);
-router.post('/banners', adminController.createBanner);
-router.put('/banners/:bannerId', adminController.updateBanner);
+router.post('/banners', uploadTemp.fields([
+  { name: 'image', maxCount: 1 },
+  { name: 'productImage', maxCount: 1 }
+]), adminController.createBanner);
+router.put('/banners/:bannerId', uploadTemp.fields([
+  { name: 'image', maxCount: 1 },
+  { name: 'productImage', maxCount: 1 }
+]), adminController.updateBanner);
 router.delete('/banners/:bannerId', adminController.deleteBanner);
 router.post('/banners/:bannerId/toggle', adminController.toggleBannerStatus);
 router.post('/banners/:bannerId/interaction', adminController.recordBannerInteraction);
@@ -110,6 +117,15 @@ router.get('/settings', adminController.getSettings);
 router.put('/settings', adminController.updateSettings);
 router.post('/settings/maintenance', adminController.toggleMaintenanceMode);
 router.put('/settings/commission', adminController.updateCommissionRate);
+
+// ============================================
+// MUNICIPALITIES
+// ============================================
+router.get('/municipalities', adminController.getAllMunicipalities);
+router.get('/municipalities/active', adminController.getActiveMunicipalities);
+router.post('/municipalities', adminController.createMunicipality);
+router.put('/municipalities/:id', adminController.updateMunicipality);
+router.delete('/municipalities/:id', adminController.deleteMunicipality);
 
 // ============================================
 // AUDIT LOGS

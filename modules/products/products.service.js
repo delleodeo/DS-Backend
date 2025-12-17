@@ -442,7 +442,7 @@ async function searchProductsService(query, limit = 0, skip = 0) {
 async function getProductByVendor(vendorId, limit = 15, skip = 0) {
   const limitNum = parseInt(limit);
   const skipNum = parseInt(skip) || 0;
-  const cacheKey = `product:vendor:${vendorId}`;
+  const cacheKey = `product:vendor:${vendorId}:approved`;
 
   const cached = redisClient && redisClient.isOpen ? await redisClient.get(cacheKey).catch(() => null) : null;
 
@@ -452,7 +452,12 @@ async function getProductByVendor(vendorId, limit = 15, skip = 0) {
     return parsedProducts.map(p => new Product(p).toJSON());
   }
 
-  const vendorProducts = await Product.find({ vendorId });
+  // Only fetch approved and not disabled products for public view
+  const vendorProducts = await Product.find({ 
+    vendorId,
+    status: 'approved',
+    isDisabled: { $ne: true }
+  });
 
   // Convert to JSON to ensure virtual fields are included
   const productsWithVirtuals = vendorProducts.map(p => p.toJSON());
@@ -464,6 +469,40 @@ async function getProductByVendor(vendorId, limit = 15, skip = 0) {
   }
 
   // Apply validation and virtuals (redundant for virtuals but good for cleanup)
+  if (Array.isArray(productsWithVirtuals)) {
+    productsWithVirtuals.forEach(p => validateAndCleanPromotions(p));
+  }
+
+  return productsWithVirtuals;
+}
+
+// Get ALL vendor's own products including pending/rejected (for vendor dashboard)
+async function getVendorOwnProducts(vendorId, limit = 100, skip = 0) {
+  const limitNum = parseInt(limit) || 100;
+  const skipNum = parseInt(skip) || 0;
+  const cacheKey = `product:vendor:${vendorId}:own:all`;
+
+  const cached = redisClient && redisClient.isOpen ? await redisClient.get(cacheKey).catch(() => null) : null;
+
+  if (cached) {
+    const parsedProducts = JSON.parse(cached);
+    return parsedProducts.map(p => new Product(p).toJSON());
+  }
+
+  // Fetch ALL products for this vendor (no status filter)
+  const vendorProducts = await Product.find({ 
+    vendorId,
+    isDisabled: { $ne: true }
+  }).sort({ createdAt: -1 });
+
+  // Convert to JSON to ensure virtual fields are included
+  const productsWithVirtuals = vendorProducts.map(p => p.toJSON());
+
+  if (redisClient && redisClient.isOpen) {
+    redisClient.set(cacheKey, JSON.stringify(productsWithVirtuals), { EX: 120 }).catch(() => {}); // Shorter cache for own products
+  }
+
+  // Apply validation and virtuals
   if (Array.isArray(productsWithVirtuals)) {
     productsWithVirtuals.forEach(p => validateAndCleanPromotions(p));
   }
@@ -890,6 +929,7 @@ module.exports = {
   getProductByMunicipality,
   getRelatedProducts,
   getProductByVendor,
+  getVendorOwnProducts,
   updateProductOptionService,
   removeVariant,
   addProductStock,
