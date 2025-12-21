@@ -369,7 +369,7 @@ exports.updateOrderStatusService = async (
 	}
 	if (newStatus === "delivered") {
 		// Calculate total amount (subTotal + shippingFee)
-		const orderTotal = (order.subTotal || 0) + (order.shippingFee || 0);
+		const orderTotal = order.subTotal || 0;
 		
 		console.log(`\n📦 [ORDER DELIVERED] Order ${order._id} marked as delivered`);
 		console.log(`   Vendor ID: ${order.vendorId}`);

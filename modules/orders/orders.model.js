@@ -73,9 +73,49 @@ const OrderSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ["pending", "paid", "shipped", "delivered", "cancelled"],
+    enum: [
+      "pending",           // Order created, awaiting payment
+      "paid",              // Payment received (held in escrow)
+      "shipped",           // Order shipped by vendor
+      "delivered",         // Order delivered to customer
+      "pending_release",   // Delivered, awaiting admin approval for payment release
+      "released",          // Payment released to seller
+      "cancelled",         // Order cancelled
+      "refund_requested",  // Customer requested refund
+      "refund_approved",   // Admin approved refund
+      "refunded"           // Refund completed
+    ],
     default: "pending",
   },
+  
+  // 💰 Escrow Tracking
+  escrowStatus: {
+    type: String,
+    enum: ["not_applicable", "held", "pending_release", "released", "refunded"],
+    default: "not_applicable"
+  },
+  escrowHeldAt: { type: Date },
+  escrowReleasedAt: { type: Date },
+  escrowReleasedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+  
+  // 🔄 Refund Tracking
+  refundStatus: {
+    type: String,
+    enum: ["none", "requested", "approved", "rejected", "processed"],
+    default: "none"
+  },
+  refundRequestedAt: { type: Date },
+  refundRequestedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+  refundReason: { type: String },
+  refundApprovedAt: { type: Date },
+  refundApprovedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+  refundAmount: { type: Number, default: 0 },
+  refundSource: {
+    type: String,
+    enum: ["escrow", "seller_wallet", "seller_future_payout"],
+    default: "escrow"
+  },
+  refundNotes: { type: String },
 
   // � Commission Tracking
   commissionRate: { type: Number, default: 0.07 }, // 7% platform commission

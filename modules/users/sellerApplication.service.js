@@ -411,6 +411,11 @@ class SellerApplicationService {
   validateFiles(files) {
     const errors = [];
 
+    if (!files) {
+      errors.push('No files uploaded');
+      return errors;
+    }
+
     if (!files.governmentId || !files.governmentId[0]) {
       errors.push('Government ID is required');
     }

@@ -104,6 +104,6 @@ router.use("/upload", uploadRoutes);
 router.use("/reviews", reviewRoutes);
 router.use("/messages", messageRoutes);
 router.use("/socket-test", socketTestRoutes);
-router.use("/seller", sellerApplicationRoutes);
+router.use("/api/seller", sellerApplicationRoutes);
 
 module.exports = router;

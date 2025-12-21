@@ -324,7 +324,7 @@ class SellerManagementService {
             cancelledOrders,
             cancellationRate: orders.length ? ((cancelledOrders / orders.length) * 100).toFixed(2) : 0,
             totalRevenue,
-            averageRating: avgRating[0]?.avgRating?.toFixed(2) || 0
+            averageRating: (vendor.rating / vendor.numRatings).toFixed(2) || 8
           }
         };
       } catch (error) {

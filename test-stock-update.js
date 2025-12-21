@@ -3,16 +3,20 @@ const { updateProductStockOnDelivery } = require('./modules/products/products.se
 const { updateOrderStatusService } = require('./modules/orders/orders.service');
 const Product = require('./modules/products/products.model');
 const Order = require('./modules/orders/orders.model');
+require('dotenv').config();
 
 // Test configuration - update with your actual MongoDB connection
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/doroshop';
+const MONGODB_URI = process.env.MONGO_URI
 
 async function setupTestData() {
   console.log('🔧 Setting up test data...');
   
+  // Use existing vendor ID instead of creating a new one
+  const vendorId = '6947d2c353d789bcbc5269a9';
+  
   // Create a test product with options
   const testProduct = new Product({
-    vendorId: new mongoose.Types.ObjectId(),
+    vendorId: vendorId,
     name: 'Test Product',
     description: 'Test product for stock update',
     price: 100,
@@ -50,7 +54,7 @@ async function setupTestData() {
   // Create a test order
   const testOrder = new Order({
     customerId: new mongoose.Types.ObjectId(),
-    vendorId: new mongoose.Types.ObjectId(),
+    vendorId: vendorId,
     items: [
       {
         productId: testProduct._id,
@@ -126,7 +130,7 @@ async function runTest() {
     console.log('\n🧹 Cleaning up test data...');
     await Product.findByIdAndDelete(testProduct._id);
     await Order.findByIdAndDelete(testOrder._id);
-    console.log('✅ Test data cleaned up');
+    console.log('✅ Test data cleaned up (vendor preserved)');
 
     console.log('\n🎉 Test completed successfully!');
 
