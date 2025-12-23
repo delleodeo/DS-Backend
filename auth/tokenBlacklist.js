@@ -65,7 +65,8 @@ class TokenBlacklist {
       
       const keys = await redisClient.keys("blacklist:*");
       if (keys.length > 0) {
-        await redisClient.del(keys);
+        const { safeDel } = require('../config/redis');
+        await safeDel(keys);
         console.log(`Cleared ${keys.length} blacklisted tokens`);
       }
     } catch (error) {

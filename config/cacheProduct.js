@@ -10,7 +10,7 @@ module.exports = async () => {
 	try {
 		const redisClient = getRedisClient();
 		const products = await Product.find().lean();
-		await redisClient.set("products:all", JSON.stringify(products)); // No expiry
+		await redisClient.set("products:all", JSON.stringify(products), { EX: 3600 }).catch(() => {}); // No expiry
 		console.log(`✅ Cached ${products.length} products in Redis`);
 	} catch (err) {
 		console.error("Failed to cache products:", err.message);

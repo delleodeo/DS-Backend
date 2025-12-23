@@ -28,8 +28,12 @@ const updateProductRating = async (productId) => {
 
     // Clear product cache
     if (isRedisAvailable()) {
-      await redisClient.del(`product:${productId}`).catch(() => {});
-      await redisClient.del(`products:*`).catch(() => {});
+      const { safeDel } = require('../../config/redis');
+      await safeDel(`product:${productId}`);
+      // Use pattern delete for wildcard product cache
+      const CacheUtils = require('../products/cacheUtils');
+      const cache = new CacheUtils(redisClient);
+      await cache.deletePattern('products:*');
     }
 
     return {
@@ -148,11 +152,12 @@ exports.createReviewService = async (reviewData) => {
 
     // Clear caches
     if (isRedisAvailable()) {
+      const { safeDel } = require('../../config/redis');
       await Promise.all([
-        redisClient.del(`reviews:product:${productId}`).catch(() => {}),
-        redisClient.del(`reviews:user:${userId}`).catch(() => {}),
-        redisClient.del(`reviews:vendor:${vendorId}`).catch(() => {}),
-		redisClient.del(`vendor:${vendorId}`).catch(() => {}),
+        safeDel(`reviews:product:${productId}`),
+        safeDel(`reviews:user:${userId}`),
+        safeDel(`reviews:vendor:${vendorId}`),
+        safeDel(`vendor:${vendorId}`),
       ]);
     }
 
@@ -287,10 +292,11 @@ exports.updateReviewService = async (reviewId, userId, updateData) => {
 
     // Clear caches
     if (isRedisAvailable()) {
+      const { safeDel } = require('../../config/redis');
       await Promise.all([
-        redisClient.del(`reviews:product:${review.productId}`).catch(() => {}),
-        redisClient.del(`reviews:user:${userId}`).catch(() => {}),
-        redisClient.del(`reviews:vendor:${review.vendorId}`).catch(() => {}),
+        safeDel(`reviews:product:${review.productId}`),
+        safeDel(`reviews:user:${userId}`),
+        safeDel(`reviews:vendor:${review.vendorId}`),
       ]);
     }
 
@@ -326,10 +332,11 @@ exports.deleteReviewService = async (reviewId, userId) => {
 
     // Clear caches
     if (isRedisAvailable()) {
+      const { safeDel } = require('../../config/redis');
       await Promise.all([
-        redisClient.del(`reviews:product:${productId}`).catch(() => {}),
-        redisClient.del(`reviews:user:${userId}`).catch(() => {}),
-        redisClient.del(`reviews:vendor:${vendorId}`).catch(() => {}),
+        safeDel(`reviews:product:${productId}`),
+        safeDel(`reviews:user:${userId}`),
+        safeDel(`reviews:vendor:${vendorId}`),
       ]);
     }
 
@@ -368,10 +375,9 @@ exports.addVendorResponseService = async (
 
     // Clear caches
     if (isRedisAvailable()) {
-      await redisClient
-        .del(`reviews:product:${review.productId}`)
-        .catch(() => {});
-      await redisClient.del(`reviews:vendor:${vendorId}`).catch(() => {});
+      const { safeDel } = require('../../config/redis');
+      await safeDel(`reviews:product:${review.productId}`);
+      await safeDel(`reviews:vendor:${vendorId}`);
     }
 
     console.log(
@@ -414,9 +420,8 @@ exports.markReviewHelpfulService = async (reviewId, userId) => {
 
     // Clear cache
     if (isRedisAvailable()) {
-      await redisClient
-        .del(`reviews:product:${review.productId}`)
-        .catch(() => {});
+      const { safeDel } = require('../../config/redis');
+      await safeDel(`reviews:product:${review.productId}`);
     }
 
     return {

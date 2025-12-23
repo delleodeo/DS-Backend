@@ -52,8 +52,9 @@ exports.verifyAndRegister = async ({
 	await Admin.updateOne({}, { $inc: { totalUsers: 1, newUsersCount: 1 } });
 
 	if (isRedisAvailable()) {
-		await redisClient.del(userRedisOtpKey(email)).catch(() => {});
-	}
+		const { safeDel } = require("../../config/redis");
+		await safeDel(userRedisOtpKey(email));
+	} 
 
 	const token = createToken(user);
 
@@ -84,8 +85,10 @@ exports.getUserById = async (id) => {
 	if (!user) throw new Error("User not found");
 
 	if (isRedisAvailable()) {
+		const { safeDel } = require("../../config/redis");
 		await redisClient.set(cacheKey, JSON.stringify(user), { EX: 600 }).catch(() => {});
-	}
+		// no-op safeDel available if required elsewhere
+	} 
 	return user;
 };
 
@@ -99,8 +102,10 @@ exports.updateUser = async (id, updates) => {
 
 	const cacheKey = getUserCacheKey(id);
 	if (isRedisAvailable()) {
+		const { safeDel } = require("../../config/redis");
 		await redisClient.set(cacheKey, JSON.stringify(updated), { EX: 3600 }).catch(() => {});
-	}
+		// safeDel can be used to remove keys if needed
+	} 
 
 	return updated;
 };
@@ -117,7 +122,8 @@ exports.deleteUser = async (id) => {
 		}
 	);
 	if (isRedisAvailable()) {
-		await redisClient.del(getUserCacheKey(id)).catch(() => {});
+		const { safeDel } = require('../../config/redis');
+		await safeDel(getUserCacheKey(id));
 	}
 };
 
@@ -163,12 +169,13 @@ exports.checkSession = async (token) => {
 exports.logoutUser = async (token, userId) => {
   try {
     const TokenBlacklist = require("../../auth/tokenBlacklist");
+    const { safeDel } = require('../../config/redis');
     
     // Blacklist the token
     await TokenBlacklist.blacklistToken(token);
     
-    // Clear user cache
-    await redisClient.del(getUserCacheKey(userId));
+    // Clear user cache (safe)
+    await safeDel(getUserCacheKey(userId));
     
     // Optional: Clear other user-related cache
     // You can add more cache clearing logic here if needed

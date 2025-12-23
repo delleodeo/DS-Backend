@@ -532,7 +532,8 @@ class ProductManagementService {
       const patterns = ['products:approved:*', 'products:skip:*', 'products:category:*', 'products:municipality:*'];
       
       for (const key of keysToDelete) {
-        await redisClient.del(key).catch(() => {});
+        const { safeDel } = require('../../../config/redis');
+        await safeDel(key);
       }
       
       // Clear pattern-based keys
@@ -540,7 +541,8 @@ class ProductManagementService {
         try {
           const keys = await redisClient.keys(pattern);
           if (keys.length > 0) {
-            await redisClient.del(keys);
+            const { safeDel } = require('../../../config/redis');
+            await safeDel(keys);
           }
         } catch (err) {
           console.warn(`Failed to clear cache pattern ${pattern}:`, err.message);
@@ -582,14 +584,16 @@ class ProductManagementService {
       const patterns = ['products:approved:*', 'products:skip:*', 'products:category:*', 'products:municipality:*'];
       
       for (const key of keysToDelete) {
-        await redisClient.del(key).catch(() => {});
+        const { safeDel } = require('../../../config/redis');
+        await safeDel(key);
       }
       
       for (const pattern of patterns) {
         try {
           const keys = await redisClient.keys(pattern);
           if (keys.length > 0) {
-            await redisClient.del(keys);
+            const { safeDel } = require('../../../config/redis');
+            await safeDel(keys);
           }
         } catch (err) {
           console.warn(`Failed to clear cache pattern ${pattern}:`, err.message);
@@ -630,17 +634,20 @@ class ProductManagementService {
         `products:${productId}`,
         `product:vendor:${product.vendorId}`
       ];
+      for (const key of keysToDelete) {
+        const { safeDel } = require('../../../config/redis');
+        await safeDel(key);
+      }
       const patterns = ['products:approved:*', 'products:skip:*', 'products:category:*', 'products:municipality:*'];
       
-      for (const key of keysToDelete) {
-        await redisClient.del(key).catch(() => {});
-      }
+
       
       for (const pattern of patterns) {
         try {
           const keys = await redisClient.keys(pattern);
           if (keys.length > 0) {
-            await redisClient.del(keys);
+            const { safeDel } = require('../../../config/redis');
+            await safeDel(keys);
           }
         } catch (err) {
           console.warn(`Failed to clear cache pattern ${pattern}:`, err.message);
@@ -670,7 +677,9 @@ class ProductManagementService {
 
     // Clear product cache
     if (isRedisAvailable()) {
-      await redisClient.del('products:*').catch(() => {});
+      const CacheUtils = require('../../products/cacheUtils');
+      const cache = new CacheUtils(redisClient);
+      await cache.deletePattern('products:*');
     }
 
     await AuditService.log(adminId, adminEmail, 'PRODUCT_DISABLED', 'Product', productId, {
@@ -693,7 +702,9 @@ class ProductManagementService {
 
     // Clear product cache
     if (isRedisAvailable()) {
-      await redisClient.del('products:*').catch(() => {});
+      const CacheUtils = require('../../products/cacheUtils');
+      const cache = new CacheUtils(redisClient);
+      await cache.deletePattern('products:*');
     }
 
     await AuditService.log(adminId, adminEmail, 'PRODUCT_ENABLED', 'Product', productId, {
@@ -712,7 +723,9 @@ class ProductManagementService {
 
     // Clear product cache
     if (isRedisAvailable()) {
-      await redisClient.del('products:*').catch(() => {});
+      const CacheUtils = require('../../products/cacheUtils');
+      const cache = new CacheUtils(redisClient);
+      await cache.deletePattern('products:*');
     }
 
     await AuditService.log(adminId, adminEmail, 'PRODUCT_DELETED', 'Product', productId, {
@@ -733,7 +746,9 @@ class ProductManagementService {
 
     // Clear product cache
     if (isRedisAvailable()) {
-      await redisClient.del('products:*').catch(() => {});
+      const CacheUtils = require('../../products/cacheUtils');
+      const cache = new CacheUtils(redisClient);
+      await cache.deletePattern('products:*');
     }
 
     await AuditService.log(adminId, adminEmail, 'PRODUCT_EDITED', 'Product', productId, {

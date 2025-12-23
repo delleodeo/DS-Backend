@@ -6,10 +6,12 @@ const routes = require("./routes");
 const passport = require("./modules/users/passport");
 const cookieParser = require("cookie-parser");
 const { createSession } = require("./auth/session");
+const rateLimiter = require("./utils/rateLimiter");
 
 // middleware
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
+app.use(rateLimiter({ windowSec: 60, maxRequests: 1500, keyPrefix: "global" }));
 app.use(createSession);
 app.use(
   cors({

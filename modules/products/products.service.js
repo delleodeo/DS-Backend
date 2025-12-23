@@ -9,256 +9,131 @@ const Product = require("./products.model.js");
 const Admin = require("../admin/admin.model.js");
 const Vendor = require("../vendors/vendors.model.js");
 const { validateOptionPayload } = require("../../utils/validateOption.js");
-const { deleteBatchFromCloudinary, extractPublicIdFromUrl } = require("../upload/upload.service.js");
+const {
+  deleteBatchFromCloudinary,
+  extractPublicIdFromUrl,
+} = require("../upload/upload.service.js");
+const CacheUtils = require("./cacheUtils.js");
+const {
+  validateAndCleanPromotions,
+  ensureMainImage,
+  isValidObjectId,
+  createError,
+  sanitizePagination,
+  buildSearchQuery,
+  buildCategoryQuery,
+  buildMunicipalityQuery,
+} = require("./productUtils.js");
+
+const cache = new CacheUtils(redisClient);
 const redisKey = "products:all";
 const mongoose = require("mongoose");
 
-/**
- * Validate and clean expired promotions from product data
- * This ensures that even cached products return accurate promotion status
- * Also manually attaches virtual fields (hasPromotion, promotionStatus) for lean queries
- * @param {Object} product - Product object (will be modified in place)
- */
-function validateAndCleanPromotions(product) {
-  if (!product) return;
-  
-  const now = new Date();
+async function invalidateAllProductCaches(productId, vendorId = null) {
+  // Invalidate specific product cache
+  await cache.delete(`products:${productId}`);
 
-  const getStatus = (promo) => {
-    if (!promo || !promo.isActive) return 'inactive';
-    if (promo.startDate && new Date(promo.startDate) > now) return 'scheduled';
-    if (promo.endDate && new Date(promo.endDate) < now) return 'expired';
-    return 'active';
-  };
-  
-  // Check and clean product-level promotion
-  if (product.promotion) {
-    if (product.promotion.isActive) {
-      const isExpired = product.promotion.endDate && new Date(product.promotion.endDate) < now;
-      const hasNotStarted = product.promotion.startDate && new Date(product.promotion.startDate) > now;
-      
-      if (isExpired || hasNotStarted) {
-        product.promotion.isActive = false;
-        // console.log(`[Real-time Validation] Deactivated ${isExpired ? 'expired' : 'not-started'} product-level promotion for product ${product._id}`);
-      }
-    }
-    // Attach virtuals
-    product.promotionStatus = getStatus(product.promotion);
-    product.hasPromotion = product.promotionStatus === 'active';
-  } else {
-    product.promotionStatus = 'inactive';
-    product.hasPromotion = false;
-  }
-  
-  // Check and clean option-level promotions
-  if (product.option && Array.isArray(product.option)) {
-    product.option.forEach(option => {
-      if (option.promotion) {
-        if (option.promotion.isActive) {
-          const isExpired = option.promotion.endDate && new Date(option.promotion.endDate) < now;
-          const hasNotStarted = option.promotion.startDate && new Date(option.promotion.startDate) > now;
-          
-          if (isExpired || hasNotStarted) {
-            option.promotion.isActive = false;
-            // console.log(`[Real-time Validation] Deactivated ${isExpired ? 'expired' : 'not-started'} option-level promotion for option ${option._id}`);
-          }
-        }
-        // Attach virtuals
-        option.promotionStatus = getStatus(option.promotion);
-        option.hasPromotion = option.promotionStatus === 'active';
-      } else {
-        option.promotionStatus = 'inactive';
-        option.hasPromotion = false;
-      }
-    });
-  }
-}
-
-async function invalidateAllProductCaches() {
-  console.log("Starting full product cache invalidation...");
-  if (!redisClient || !redisClient.isOpen) {
-    console.log("Skip cache invalidation: Redis not available");
-    return;
+  // Invalidate vendor-related caches
+  if (vendorId) {
+    await cache.delete(`product:vendor:${vendorId}:approved`);
+    await cache.delete(`product:vendor:${vendorId}:own:all`);
   }
 
-  await redisClient.del(redisKey).catch(() => {});
-  await redisClient.del(`${redisKey}:approved`).catch(() => {});
-
-  console.log(`Deleted key: ${redisKey} and ${redisKey}:approved`);
-
-  // Delete approved paginated keys
-  const approvedPaginatedKeys = await redisClient.keys("products:approved:skip:*:limit:*").catch(() => []);
-  if (approvedPaginatedKeys.length) {
-    await redisClient.del(...approvedPaginatedKeys).catch(() => {});
-    console.log(`Deleted ${approvedPaginatedKeys.length} approved paginated keys`);
-  }
-
-  const paginatedKeys = await redisClient.keys("products:skip:*:limit:*").catch(() => []);
-  if (paginatedKeys.length) {
-    await redisClient.del(...paginatedKeys).catch(() => {});
-    console.log(`Deleted ${paginatedKeys.length} paginated keys`);
-  } else {
-    console.log(`No paginated keys found`);
-  }
-
-  // Delete approved category keys
-  const approvedCategoryKeys = await redisClient.keys("products:approved:category:*").catch(() => []);
-  if (approvedCategoryKeys.length) {
-    await redisClient.del(...approvedCategoryKeys).catch(() => {});
-    console.log(`Deleted ${approvedCategoryKeys.length} approved category keys`);
-  }
-
-  const categoryKeys = await redisClient.keys("products:category:*").catch(() => []);
-  if (categoryKeys.length) {
-    await redisClient.del(...categoryKeys).catch(() => {});
-    console.log(`Deleted ${categoryKeys.length} category keys`);
-  } else {
-    console.log(`No category keys found`);
-  }
-
-  const searchKeys = await redisClient.keys("products:search:*").catch(() => []);
-  if (searchKeys.length) {
-    await redisClient.del(...searchKeys).catch(() => {});
-    console.log(`Deleted ${searchKeys.length} search keys`);
-  } else {
-    console.log(`No search keys found`);
-  }
-
-  const municipalityKeys = await redisClient.keys("products:municipality:*").catch(() => []);
-  if (municipalityKeys.length) {
-    await redisClient.del(...municipalityKeys).catch(() => {});
-    console.log(`Deleted ${municipalityKeys.length} municipality keys`);
-  } else {
-    console.log(`No municipality keys found`);
-  }
-
-  const vendorKeys = await redisClient.keys("product:vendor:*").catch(() => []);
-  if (vendorKeys.length) {
-    await redisClient.del(...vendorKeys).catch(() => {});
-    console.log(`Deleted ${vendorKeys.length} vendor product keys`);
-  } else {
-    console.log(`No vendor product keys found`);
-  }
-
-  // Invalidate individual product caches (critical for cart items)
-  const individualProductKeys = await redisClient.keys("products:*").catch(() => []);
-  const productIdKeys = individualProductKeys.filter(key => {
-    const parts = key.split(':');
-    return parts.length === 2 && parts[0] === 'products' && mongoose.Types.ObjectId.isValid(parts[1]);
-  });
-  
-  if (productIdKeys.length) {
-    await redisClient.del(...productIdKeys).catch(() => {});
-    console.log(`Deleted ${productIdKeys.length} individual product cache keys`);
-  }
-
-  console.log("All product-related caches invalidated successfully!");
+  // Invalidate patterns that might be affected (more selective than all)
+  await cache.deletePattern(`products:approved:category:*`);
+  await cache.deletePattern(`products:search:*`);
+  await cache.deletePattern(`products:municipality:*`);
 }
 
 // Product status constants
 const PRODUCT_STATUS = {
-  PENDING_REVIEW: 'pending_review',
-  APPROVED: 'approved',
-  REJECTED: 'rejected'
+  PENDING_REVIEW: "pending_review",
+  APPROVED: "approved",
+  REJECTED: "rejected",
 };
 
 async function getPaginatedProducts(skip, limit) {
-  const redisPageKey = `products:approved:skip:${skip}:limit:${limit}`;
-  let paginatedProducts;
+  const { limit: limitNum, skip: skipNum } = sanitizePagination(limit, skip);
+  const redisPageKey = `products:approved:skip:${skipNum}:limit:${limitNum}`;
 
-  const cache = redisClient && redisClient.isOpen ? await redisClient.get(redisPageKey).catch(() => null) : null;
-  if (cache) {
+  let paginatedProducts = await cache.get(redisPageKey);
+  if (paginatedProducts) {
     console.log("Redis cache hit:", redisPageKey);
-    paginatedProducts = JSON.parse(cache);
   } else {
     // Only return approved products for public listing (buyers)
-    paginatedProducts = await Product.find({ 
+    paginatedProducts = await Product.find({
       status: PRODUCT_STATUS.APPROVED,
-      isDisabled: { $ne: true }
+      isDisabled: { $ne: true },
     })
       .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit)
-      .lean();
-    if (redisClient && redisClient.isOpen) {
-      await redisClient
-        .setEx(redisPageKey, 300, JSON.stringify(paginatedProducts))
-        .catch(() => {}); // 5 min TTL
-      console.log(`Cached approved products page skip=${skip}, limit=${limit}`);
-    }
-  }
+      .skip(skipNum)
+      .limit(limitNum)
+      .lean({ virtuals: true });
 
-  // Apply validation and virtuals to all products
-  if (Array.isArray(paginatedProducts)) {
-    paginatedProducts.forEach(p => validateAndCleanPromotions(p));
+    if (cache.isAvailable()) {
+      await cache.set(redisPageKey, paginatedProducts, 300); // 5 min TTL
+      console.log(
+        `Cached approved products page skip=${skipNum}, limit=${limitNum}`
+      );
+    }
   }
 
   return paginatedProducts;
 }
 
 async function createProductService(data) {
-  const newProduct = new Product(data);
-  
-  // Ensure product has at least one main image
-  ensureMainImage(newProduct);
-  
-  await newProduct.save();
+  const session = await mongoose.startSession();
+  session.startTransaction();
 
-  await Admin.updateOne({}, { $inc: { totalProducts: 1 } });
+  try {
+    const newProduct = new Product(data);
 
-  await invalidateAllProductCaches();
+    // Ensure product has at least one main image
+    ensureMainImage(newProduct);
 
-  return newProduct;
+    await newProduct.save({ session });
+
+    await session.commitTransaction();
+
+    await invalidateAllProductCaches(newProduct._id, newProduct.vendorId);
+
+    return newProduct;
+  } catch (error) {
+    await session.abortTransaction();
+    throw error;
+  } finally {
+    session.endSession();
+  }
 }
 
 async function getProductsByCategoryService(category, limit, skip) {
+  const { limit: limitNum, skip: skipNum } = sanitizePagination(limit, skip);
   const normalizeCategory = category.toLowerCase().trim();
-  const cacheKey = `products:approved:category:${normalizeCategory}:limit:${limit}:skip:${skip}`;
+  const cacheKey = `products:approved:category:${normalizeCategory}:limit:${limitNum}:skip:${skipNum}`;
 
-  const cached = redisClient && redisClient.isOpen ? await redisClient.get(cacheKey).catch(() => null) : null;
-  if (cached) {
+  let paginated = await cache.get(cacheKey);
+  if (paginated) {
     console.log("Redis cache hit:", cacheKey);
-    return JSON.parse(cached);
+    return paginated;
   }
 
-  let allProducts;
-  const approvedCacheKey = `${redisKey}:approved`;
-  const allCached = redisClient && redisClient.isOpen ? await redisClient.get(approvedCacheKey).catch(() => null) : null;
+  // Build query for approved products with category filter
+  const baseQuery = {
+    status: PRODUCT_STATUS.APPROVED,
+    isDisabled: { $ne: true },
+  };
 
-  if (allCached) {
-    allProducts = JSON.parse(allCached);
-    console.log("🗃 Approved products loaded from Redis");
-  } else {
-    // Only fetch approved products for public listing
-    allProducts = await Product.find({ 
-      status: PRODUCT_STATUS.APPROVED,
-      isDisabled: { $ne: true }
-    }).lean();
-    if (redisClient && redisClient.isOpen) {
-      await redisClient
-        .set(approvedCacheKey, JSON.stringify(allProducts), { EX: 600 })
-        .catch(() => {});
-      console.log("Re-fetched and cached approved products from MongoDB");
-    }
-  }
+  const categoryQuery = buildCategoryQuery(normalizeCategory);
+  const query = { ...baseQuery, ...categoryQuery };
 
-  const filtered = allProducts.filter((p) => {
-    const text = `${p.name} ${p.description || ""} ${(p.categories || []).join(
-      " "
-    )}`.toLowerCase();
-    return text.includes(normalizeCategory);
-  });
+  paginated = await Product.find(query)
+    .sort({ createdAt: -1 })
+    .skip(skipNum)
+    .limit(limitNum)
+    .lean({ virtuals: true });
 
-  const paginated =
-    limit > 0 ? filtered.slice(skip, skip + limit) : filtered.slice(skip);
-
-  if (redisClient && redisClient.isOpen) {
-    await redisClient.setEx(cacheKey, 3600, JSON.stringify(paginated)).catch(() => {}); // 1 hour TTL
-  }
-
-  // Apply validation and virtuals
-  if (Array.isArray(paginated)) {
-    paginated.forEach(p => validateAndCleanPromotions(p));
+  if (cache.isAvailable()) {
+    await cache.set(cacheKey, paginated, 3600); // 1 hour TTL
   }
 
   return paginated;
@@ -266,81 +141,49 @@ async function getProductsByCategoryService(category, limit, skip) {
 
 // get product by municipality
 async function getProductByMunicipality(municipality, category, limit, skip) {
+  const { limit: limitNum, skip: skipNum } = sanitizePagination(limit, skip);
   const normalizeMunicipality = municipality.toLowerCase().trim();
   const normalizeCategory = category.toLowerCase().trim();
-  const cacheKey = `products:approved:municipality:${normalizeMunicipality}:${category}:limit:${limit}:skip:${skip}`;
+  const cacheKey = `products:approved:municipality:${normalizeMunicipality}:${normalizeCategory}:limit:${limitNum}:skip:${skipNum}`;
 
-  const cached = redisClient && redisClient.isOpen ? await redisClient.get(cacheKey).catch(() => null) : null;
-  if (cached) {
+  let paginated = await cache.get(cacheKey);
+  if (paginated) {
     console.log("Redis cache hit:", cacheKey);
-    return JSON.parse(cached);
-  }
-
-  let allProducts;
-  const approvedCacheKey = `${redisKey}:approved`;
-  const allCached = redisClient && redisClient.isOpen ? await redisClient.get(approvedCacheKey).catch(() => null) : null;
-
-  if (allCached) {
-    allProducts = JSON.parse(allCached);
-    console.log("🗃 Approved products loaded from Redis");
-  } else {
-    // Only fetch approved products for public listing
-    allProducts = await Product.find({ 
-      status: PRODUCT_STATUS.APPROVED,
-      isDisabled: { $ne: true }
-    }).lean();
-    if (redisClient && redisClient.isOpen) {
-      await redisClient
-        .set(approvedCacheKey, JSON.stringify(allProducts), { EX: 600 })
-        .catch(() => {});
-      console.log("Re-fetched and cached approved products from MongoDB");
-    }
-  }
-
-  let filtered;
-
-  if (normalizeMunicipality === "all" && normalizeCategory !== "all") {
-    filtered = allProducts.filter((p) => {
-      const text = `${(p.categories || []).join(" ")}`.toLowerCase();
-      return text.includes(normalizeCategory);
-    });
-    return filtered;
-  }
-
-  if (normalizeMunicipality === "all") {
-    const paginated =
-      limit > 0
-        ? allProducts.slice(skip, skip + limit)
-        : allProducts.slice(skip);
     return paginated;
   }
 
+  const baseQuery = {
+    status: PRODUCT_STATUS.APPROVED,
+    isDisabled: { $ne: true },
+  };
+
+  let query = { ...baseQuery };
+
+  if (normalizeMunicipality !== "all") {
+    query = { ...query, ...buildMunicipalityQuery(normalizeMunicipality) };
+  }
+
   if (normalizeCategory !== "all") {
-    filtered = allProducts.filter((p) => {
-      const text = `${(p.categories || []).join(" ")}`.toLowerCase();
-      return (
-        p.municipality.toLowerCase() === normalizeMunicipality &&
-        text.includes(normalizeCategory)
-      );
-    });
+    query = { ...query, ...buildCategoryQuery(normalizeCategory) };
+  }
+
+  if (normalizeMunicipality === "all" && normalizeCategory === "all") {
+    // No filters, just paginate all
+    paginated = await Product.find(baseQuery)
+      .sort({ createdAt: -1 })
+      .skip(skipNum)
+      .limit(limitNum)
+      .lean({ virtuals: true });
   } else {
-    filtered = allProducts.filter((p) => {
-      return p.municipality.toLowerCase() === normalizeMunicipality;
-    });
+    paginated = await Product.find(query)
+      .sort({ createdAt: -1 })
+      .skip(skipNum)
+      .limit(limitNum)
+      .lean({ virtuals: true });
   }
 
-  const paginated =
-    limit > 0 ? filtered.slice(skip, skip + limit) : filtered.slice(skip);
-
-  if (redisClient && redisClient.isOpen) {
-    await redisClient
-      .set(cacheKey, JSON.stringify(paginated), { EX: 300 })
-      .catch(() => {}); // 1 hour TTL
-  }
-
-  // Apply validation and virtuals
-  if (Array.isArray(paginated)) {
-    paginated.forEach(p => validateAndCleanPromotions(p));
+  if (cache.isAvailable()) {
+    await cache.set(cacheKey, paginated, 300); // 5 min TTL
   }
 
   return paginated;
@@ -372,108 +215,77 @@ async function getRelatedProducts(productId, limit = 6) {
   })
     .sort({ updatedAt: -1 }) // newest first
     .limit(limit)
-    .lean();
-
-  // Apply validation and virtuals
-  if (Array.isArray(related)) {
-    related.forEach(p => validateAndCleanPromotions(p));
-  }
+    .lean({ virtuals: true });
 
   return related;
 }
 
 async function searchProductsService(query, limit = 0, skip = 0) {
   const terms = query.toLowerCase().trim().split(/\s+/);
-  const limitNum = parseInt(limit) || 0;
-  const skipNum = parseInt(skip) || 0;
+  const { limit: limitNum, skip: skipNum } = sanitizePagination(limit, skip);
   const cacheKey = `products:search:${terms.join(
     "-"
   )}:limit:${limitNum}:skip:${skipNum}`;
 
-  const cached = redisClient && redisClient.isOpen ? await redisClient.get(cacheKey).catch(() => null) : null;
-  if (cached) {
+  let paginated = await cache.get(cacheKey);
+  if (paginated) {
     console.log("Redis cache hit:", cacheKey);
-    return JSON.parse(cached);
+    return paginated;
   }
 
-  let allProducts;
-  const approvedCacheKey = `${redisKey}:approved`;
-  const allCached = redisClient && redisClient.isOpen ? await redisClient.get(approvedCacheKey).catch(() => null) : null;
+  const baseQuery = {
+    status: PRODUCT_STATUS.APPROVED,
+    isDisabled: { $ne: true },
+  };
 
-  if (allCached) {
-    allProducts = JSON.parse(allCached);
-    console.log("📦 Approved products loaded from Redis");
-  } else {
-    // Only search approved products for public listing
-    allProducts = await Product.find({ 
-      status: PRODUCT_STATUS.APPROVED,
-      isDisabled: { $ne: true }
-    }).lean();
-    if (redisClient && redisClient.isOpen) {
-      await redisClient.set(approvedCacheKey, JSON.stringify(allProducts), { EX: 600 }).catch(() => {});
-    }
-    console.log("Approved products reloaded from MongoDB");
-  }
+  const searchQuery = buildSearchQuery(terms);
+  const queryObj = { ...baseQuery, ...searchQuery };
 
-  const results = allProducts.filter((product) => {
-    const text = `${product.name} ${product.description || ""} ${(
-      product.categories || []
-    ).join(" ")}`.toLowerCase();
-    return terms.every((term) => text.includes(term));
-  });
+  paginated = await Product.find(queryObj)
+    .sort({ createdAt: -1 })
+    .skip(skipNum)
+    .limit(limitNum > 0 ? limitNum : 0)
+    .lean({ virtuals: true });
 
-  const paginated =
-    limitNum > 0
-      ? results.slice(skipNum, skipNum + limitNum)
-      : results.slice(skipNum);
-
-  if (paginated.length > 0) {
-    await redisClient.set(cacheKey, JSON.stringify(paginated), { EX: 600 }); 
-  }
-
-  // Apply validation and virtuals
-  if (Array.isArray(paginated)) {
-    paginated.forEach(p => validateAndCleanPromotions(p));
+  if (cache.isAvailable() && paginated.length > 0) {
+    await cache.set(cacheKey, paginated, 600); // 10 min TTL
   }
 
   return paginated;
 }
- 
+
 async function getProductByVendor(vendorId, limit = 15, skip = 0) {
-  const limitNum = parseInt(limit);
-  const skipNum = parseInt(skip) || 0;
-  const cacheKey = `product:vendor:${vendorId}:approved`;
+  if (!isValidObjectId(vendorId)) {
+    throw createError("Invalid vendor ID", 400);
+  }
 
-  const cached = redisClient && redisClient.isOpen ? await redisClient.get(cacheKey).catch(() => null) : null;
+  const { limit: limitNum, skip: skipNum } = sanitizePagination(limit, skip);
+  const cacheKey = `product:vendor:${vendorId}:approved:skip:${skipNum}:limit:${limitNum}`;
 
-  if (cached) {
-    const parsedProducts = JSON.parse(cached);
-    // Re-create mongoose documents to recalculate virtual fields
-    return parsedProducts.map(p => new Product(p).toJSON());
+  let products = await cache.get(cacheKey);
+  if (products) {
+    console.log("Redis cache hit:", cacheKey);
+    return products;
   }
 
   // Only fetch approved and not disabled products for public view
-  const vendorProducts = await Product.find({ 
+  const vendorProducts = await Product.find({
     vendorId,
-    status: 'approved',
-    isDisabled: { $ne: true }
-  });
+    status: PRODUCT_STATUS.APPROVED,
+    isDisabled: { $ne: true },
+  })
+    .sort({ createdAt: -1 })
+    .skip(skipNum)
+    .limit(limitNum)
+    .lean({ virtuals: true });
 
-  // Convert to JSON to ensure virtual fields are included
-  const productsWithVirtuals = vendorProducts.map(p => p.toJSON());
+  products = vendorProducts;
 
-  // const paginated = vendorProducts.slice(skipNum, limitNum);
-
-  if (redisClient && redisClient.isOpen) {
-    redisClient.set(cacheKey, JSON.stringify(productsWithVirtuals), { EX: 300 }).catch(() => {});
+  if (cache.isAvailable()) {
+    await cache.set(cacheKey, products, 300);
   }
 
-  // Apply validation and virtuals (redundant for virtuals but good for cleanup)
-  if (Array.isArray(productsWithVirtuals)) {
-    productsWithVirtuals.forEach(p => validateAndCleanPromotions(p));
-  }
-
-  return productsWithVirtuals;
+  return products;
 }
 
 // Get ALL vendor's own products including pending/rejected (for vendor dashboard)
@@ -482,50 +294,45 @@ async function getVendorOwnProducts(vendorId, limit = 100, skip = 0) {
   const skipNum = parseInt(skip) || 0;
   const cacheKey = `product:vendor:${vendorId}:own:all`;
 
-  const cached = redisClient && redisClient.isOpen ? await redisClient.get(cacheKey).catch(() => null) : null;
-
+  const cached = await cache.get(cacheKey);
   if (cached) {
-    const parsedProducts = JSON.parse(cached);
-    return parsedProducts.map(p => new Product(p).toJSON());
+    return cached.map((p) => new Product(p).toJSON());
   }
 
   // Fetch ALL products for this vendor (no status filter)
-  const vendorProducts = await Product.find({ 
+  const productsWithVirtuals = await Product.find({
     vendorId,
-    isDisabled: { $ne: true }
-  }).sort({ createdAt: -1 });
+    isDisabled: { $ne: true },
+  }).sort({ createdAt: -1 }).lean({ virtuals: true });
 
-  // Convert to JSON to ensure virtual fields are included
-  const productsWithVirtuals = vendorProducts.map(p => p.toJSON());
-
-  if (redisClient && redisClient.isOpen) {
-    redisClient.set(cacheKey, JSON.stringify(productsWithVirtuals), { EX: 120 }).catch(() => {}); // Shorter cache for own products
-  }
-
-  // Apply validation and virtuals
-  if (Array.isArray(productsWithVirtuals)) {
-    productsWithVirtuals.forEach(p => validateAndCleanPromotions(p));
+  if (cache.isAvailable()) {
+    await cache.set(cacheKey, productsWithVirtuals, 120); // Shorter cache for own products
   }
 
   return productsWithVirtuals;
 }
 
 async function getProductByIdService(id) {
-  const cacheKey = `products:${id}`;
-  const cached = redisClient && redisClient.isOpen ? await redisClient.get(cacheKey).catch(() => null) : null;
+  if (!isValidObjectId(id)) {
+    throw createError("Invalid product ID", 400);
+  }
 
-  if (cached) {
-    const cachedProduct = JSON.parse(cached);
+  const cacheKey = `products:${id}`;
+  let productWithVendorProfile = await cache.get(cacheKey);
+
+  if (productWithVendorProfile) {
     // Validate promotions even on cached data to ensure accuracy
-    validateAndCleanPromotions(cachedProduct);
-    return cachedProduct;
+    validateAndCleanPromotions(productWithVendorProfile);
+    return productWithVendorProfile;
   }
 
   const productDoc = await Product.findById(id);
-  if (!productDoc) return null;
+  if (!productDoc) {
+    throw createError("Product not found", 404);
+  }
 
   const product = productDoc.toObject();
-  
+
   // Validate and clean expired promotions before returning
   validateAndCleanPromotions(product);
 
@@ -534,330 +341,386 @@ async function getProductByIdService(id) {
     .select("imageUrl storeName")
     .lean();
 
-  const productWithVendorProfile = {
+  productWithVendorProfile = {
     ...product,
     storeName: vendorProfile?.storeName || null,
     vendorAvatar: vendorProfile?.imageUrl || null,
   };
 
   // Reduced cache TTL to 2 minutes for more accurate promotion handling
-  if (redisClient && redisClient.isOpen) {
-    await redisClient
-      .set(cacheKey, JSON.stringify(productWithVendorProfile), { EX: 120 })
-      .catch(() => {});
+  if (cache.isAvailable()) {
+    await cache.set(cacheKey, productWithVendorProfile, 120);
   }
 
   return productWithVendorProfile;
 }
 
-// update
-/**
- * Ensure product has at least one main image.
- * If imageUrls is empty but product has options with images,
- * use the first option's image as the main image.
- * @param {Object} product - Product document
- * @returns {boolean} - Whether the product was modified
- */
-function ensureMainImage(product) {
-  // Check if product has no main images
-  if (!product.imageUrls || product.imageUrls.length === 0) {
-    // Check if product has options with images
-    if (product.option && product.option.length > 0) {
-      // Find first option with an image
-      const optionWithImage = product.option.find(opt => opt.imageUrl);
-      
-      if (optionWithImage) {
-        console.log(`[Product Image Auto-Replace] No main images found for product ${product._id}, using option image: ${optionWithImage.imageUrl}`);
-        product.imageUrls = [optionWithImage.imageUrl];
-        return true;
-      }
-    }
-  }
-  return false;
-}
-
 async function updateProductService(id, data) {
-  const PRODUCT_BY_ID_KEY = `products:${id}`;
-  if (redisClient && redisClient.isOpen) {
-    await redisClient.del(PRODUCT_BY_ID_KEY).catch(() => {});
+  if (!isValidObjectId(id)) {
+    throw createError("Invalid product ID", 400);
   }
-  
+
+  const PRODUCT_BY_ID_KEY = `products:${id}`;
+  await cache.delete(PRODUCT_BY_ID_KEY);
+
   let updatedProduct = await Product.findByIdAndUpdate(id, data, {
     new: true,
     runValidators: true,
   });
 
-  if (!updatedProduct) return null;
+  if (!updatedProduct) {
+    throw createError("Product not found", 404);
+  }
 
   // Check if we need to auto-replace main image with option image
   const wasModified = ensureMainImage(updatedProduct);
-  
+
   if (wasModified) {
     // Save the changes if main image was auto-replaced
     await updatedProduct.save();
   }
-  
+
   // Convert to plain object
   updatedProduct = updatedProduct.toObject();
 
-  await invalidateAllProductCaches();
+  // Selective cache invalidation
+  await invalidateAllProductCaches(id, updatedProduct.vendorId);
 
   return updatedProduct;
 }
 
 async function updateProductOptionService(productId, optionId, updateData) {
-  // Build dynamic $set object using dot notation for embedded document
+  if (!isValidObjectId(productId)) {
+    throw createError("Invalid product ID", 400);
+  }
+  if (!isValidObjectId(optionId)) {
+    throw createError("Invalid option ID", 400);
+  }
+
+  // Whitelist modifiable option fields to prevent unexpected updates
+  const allowedKeys = ["imageUrl", "price", "label", "isHot", "stock", "sold"];
   const updateFields = {};
-  for (const key in updateData) {
+  for (const key of Object.keys(updateData)) {
+    if (!allowedKeys.includes(key)) {
+      throw createError(`Invalid option field: ${key}`, 400);
+    }
     updateFields[`option.$.${key}`] = updateData[key];
   }
 
   const updated = await Product.findOneAndUpdate(
     { _id: productId, "option._id": optionId },
     { $set: updateFields },
-    { new: true }
+    { new: true, runValidators: true, context: 'query' }
   );
 
-  await invalidateAllProductCaches();
+  if (!updated) {
+    throw createError("Product or option not found", 404);
+  }
+
+  await invalidateAllProductCaches(productId, updated.vendorId);
   return updated;
 }
 
 async function addProductStock(productId, optionId, addition) {
-  console.log("type", typeof addition);
-  if (!addition || typeof addition !== "number") {
-    throw new Error("Addition value must be a number.");
+  if (!isValidObjectId(productId)) {
+    throw createError("Invalid product ID", 400);
+  }
+  if (optionId && !isValidObjectId(optionId)) {
+    throw createError("Invalid option ID", 400);
   }
 
-  let updated;
+  if (typeof addition !== "number" || Number.isNaN(addition)) {
+    throw createError("Addition value must be a number", 400);
+  }
+
+  // If optionId is provided, update the stock inside that option atomically
   if (optionId) {
-    // Update stock inside an option of the product
-    updated = await Product.findOneAndUpdate(
-      { _id: productId, "option._id": optionId },
-      { $inc: { "option.$.stock": addition } }, // increment the stock of the matched option
-      { new: true }
+    const updated = await Product.findOneAndUpdate(
+      { _id: productId, "option._id": optionId, "option.stock": { $gte: -addition } },
+      { $inc: { "option.$.stock": addition } },
+      { new: true, runValidators: true, context: 'query' }
     );
-  }
-  //   else {
-  //     // Update the main product stock
-  //     updated = await Product.findOneAndUpdate(
-  //       { _id: productId },
-  //       { $inc: { stock: addition } },  // increment the stock of the product
-  //       { new: true }
-  //     );
-  //   }
 
-  await invalidateAllProductCaches();
-  return updated;
-}
+    if (!updated) {
+      throw createError("Product or option not found or insufficient stock", 404);
+    }
 
-async function addProductStockMain(productId, addition) {
-  console.log("type", typeof addition);
-  if (!addition || typeof addition !== "number") {
-    throw new Error("Addition value must be a number.");
+    await invalidateAllProductCaches(productId, updated.vendorId);
+    return updated;
   }
 
-  let updated = await Product.findOneAndUpdate(
-    { _id: productId },
+  // No optionId: update main product stock atomically
+  const updated = await Product.findOneAndUpdate(
+    { _id: productId, stock: { $gte: -addition } },
     { $inc: { stock: addition } },
     { new: true }
   );
 
-  await invalidateAllProductCaches();
+  if (!updated) {
+    throw createError("Product not found or insufficient stock", 404);
+  }
+
+  await invalidateAllProductCaches(productId, updated.vendorId);
+  return updated;
+}
+
+async function addProductStockMain(productId, addition) {
+  if (!isValidObjectId(productId)) {
+    throw createError("Invalid product ID", 400);
+  }
+
+  console.log("type", typeof addition);
+  if (typeof addition !== "number" || Number.isNaN(addition)) {
+    throw createError("Addition value must be a number", 400);
+  }
+
+  // Update stock atomically to prevent negative values
+  let updated = await Product.findOneAndUpdate(
+    { _id: productId, stock: { $gte: -addition } },
+    { $inc: { stock: addition } },
+    { new: true }
+  );
+
+  if (!updated) {
+    throw createError("Product not found or insufficient stock", 404);
+  }
+
+  await invalidateAllProductCaches(productId, updated.vendorId);
   return updated;
 }
 
 async function deleteProductService(id) {
-  const PRODUCT_BY_ID_KEY = `products:${id}`;
+  if (!isValidObjectId(id)) {
+    throw createError("Invalid product ID", 400);
+  }
 
-  // First, fetch the product to get image URLs
-  const product = await Product.findById(id);
-  if (!product) return null;
+  const PRODUCT_BY_ID_KEY = `products:${id}`;
 
   console.log(`[Product Delete] Starting deletion for product ${id}`);
 
-  // Collect all image URLs from product and variants
-  const imageUrls = [];
-  
-  // Add main product images
-  if (product.imageUrls && Array.isArray(product.imageUrls)) {
-    console.log(`[Product Delete] Found ${product.imageUrls.length} main product images`);
-    imageUrls.push(...product.imageUrls);
-  }
-  
-  // Add variant images
-  if (product.option && Array.isArray(product.option)) {
-    const variantImagesCount = product.option.filter(v => v.imageUrl).length;
-    console.log(`[Product Delete] Found ${variantImagesCount} variant images from ${product.option.length} variants`);
-    product.option.forEach(variant => {
-      if (variant.imageUrl) {
-        imageUrls.push(variant.imageUrl);
-      }
-    });
-  }
+  // Use transaction for DB operations
+  const session = await mongoose.startSession();
+  session.startTransaction();
 
-  console.log(`[Product Delete] Total image URLs to process: ${imageUrls.length}`);
-  if (imageUrls.length > 0) {
-    console.log(`[Product Delete] Image URLs:`, imageUrls);
-  }
-
-  // Extract public IDs from Cloudinary URLs
-  const publicIds = imageUrls
-    .map(url => {
-      const publicId = extractPublicIdFromUrl(url);
-      if (!publicId) {
-        console.warn(`[Product Delete] Failed to extract public_id from URL: ${url}`);
-      }
-      return publicId;
-    })
-    .filter(id => id !== null);
-
-  console.log(`[Product Delete] Extracted ${publicIds.length} public IDs:`, publicIds);
-
-  // Delete images from Cloudinary
-  if (publicIds.length > 0) {
-    try {
-      const deleteResult = await deleteBatchFromCloudinary(publicIds);
-      console.log(`[Product Delete] Cloudinary deletion result: ${deleteResult.successful}/${deleteResult.total} images deleted successfully`);
-      
-      if (deleteResult.failed > 0) {
-        console.error(`[Product Delete] Failed to delete ${deleteResult.failed} images from Cloudinary`);
-        console.error('[Product Delete] Deletion details:', JSON.stringify(deleteResult.details, null, 2));
-      }
-    } catch (error) {
-      console.error(`[Product Delete] Exception during Cloudinary deletion:`, error);
-      // Continue with product deletion even if Cloudinary deletion fails
+  try {
+    // Atomically delete product and return deleted document
+    const deletedProduct = await Product.findOneAndDelete({ _id: id }, { session });
+    if (!deletedProduct) {
+      throw createError("Product not found", 404);
     }
-  } else {
-    console.log(`[Product Delete] No Cloudinary images to delete`);
+
+    // Gather image URLs from deleted document
+    const imageUrls = [];
+    if (deletedProduct.imageUrls && Array.isArray(deletedProduct.imageUrls)) imageUrls.push(...deletedProduct.imageUrls);
+    if (deletedProduct.option && Array.isArray(deletedProduct.option)) deletedProduct.option.forEach((v) => { if (v.imageUrl) imageUrls.push(v.imageUrl); });
+
+    const publicIds = imageUrls
+      .map((url) => {
+        const publicId = extractPublicIdFromUrl(url);
+        if (!publicId) {
+          console.warn(`
+            [Product Delete] Failed to extract public_id from URL: ${url}`
+          );
+        }
+        return publicId;
+      })
+      .filter((id) => id !== null);
+
+    await session.commitTransaction();
+
+    // Delete images from Cloudinary after successful DB deletion
+    if (publicIds.length > 0) {
+      try {
+        const deleteResult = await deleteBatchFromCloudinary(publicIds);
+        console.log(
+          `[Product Delete] Cloudinary deletion result: ${deleteResult.successful}/${deleteResult.total} images deleted successfully`
+        );
+
+        if (deleteResult.failed > 0) {
+          console.error(
+            `[Product Delete] Failed to delete ${deleteResult.failed} images from Cloudinary`
+          );
+          console.error(
+            "[Product Delete] Deletion details:",
+            JSON.stringify(deleteResult.details, null, 2)
+          );
+        }
+      } catch (error) {
+        console.error(
+          `[Product Delete] Exception during Cloudinary deletion:`,
+          error
+        );
+        // Log error but don't fail the operation since DB is already deleted
+      }
+    } else {
+      console.log(`[Product Delete] No Cloudinary images to delete`);
+    }
+
+    await cache.delete(PRODUCT_BY_ID_KEY);
+
+    await invalidateAllProductCaches(id, deletedProduct.vendorId);
+
+    console.log(
+      `[Product Delete] Successfully deleted product ${id} from database`
+    );
+
+    return true;
+  } catch (error) {
+    await session.abortTransaction();
+    throw error;
+  } finally {
+    session.endSession();
   }
-
-  // Delete product from database
-  const deletedProduct = await Product.findByIdAndDelete(id);
-  if (!deletedProduct) return null;
-
-  await Admin.updateOne({}, { $inc: { totalProducts: -1 } });
-
-  if (redisClient && redisClient.isOpen) {
-    await redisClient.del(PRODUCT_BY_ID_KEY).catch(() => {});
-  }
-
-  await invalidateAllProductCaches();
-
-  console.log(`[Product Delete] Successfully deleted product ${id} from database`);
-
-  return true;
 }
 
-async function removeVariant(productId, variantId) {
-  try {
-    const product = await Product.findById(productId);
-    if (!product) return null;
+// --- Refactor helpers for removing variants ---
 
-    // Find the variant to be removed to get its image URL
-    const variantToRemove = product.option.find(
-      (opt) => opt._id.toString() === variantId
-    );
-
-    if (product.option.length <= 1) {
-      // If only one variant exists, delete the entire product
-      // This will trigger deleteProductService logic that handles Cloudinary cleanup
-      await Product.findByIdAndDelete(productId);
-      if (redisClient && redisClient.isOpen) {
-        await redisClient.del(`products:${productId}`).catch(() => {});
-      }
-      await invalidateAllProductCaches();
-      
-      // Delete all product images from Cloudinary
-      const imageUrls = [];
-      if (product.imageUrls && Array.isArray(product.imageUrls)) {
-        imageUrls.push(...product.imageUrls);
-      }
-      if (product.option && Array.isArray(product.option)) {
-        product.option.forEach(variant => {
-          if (variant.imageUrl) {
-            imageUrls.push(variant.imageUrl);
-          }
-        });
-      }
-      
-      const publicIds = imageUrls
-        .map(url => extractPublicIdFromUrl(url))
-        .filter(id => id !== null);
-      
-      if (publicIds.length > 0) {
-        try {
-          const deleteResult = await deleteBatchFromCloudinary(publicIds);
-          console.log(`[Variant Delete] Deleted ${deleteResult.successful}/${deleteResult.total} images from Cloudinary for product ${productId}`);
-        } catch (error) {
-          console.error(`[Variant Delete] Failed to delete images from Cloudinary:`, error);
-        }
-      }
-      
-      return {
-        deleted: true,
-        message: "Product deleted since only one variant existed.",
-      };
-    }
-
-    const initialLength = product.option.length;
-
-    // Delete variant's image from Cloudinary before removing from database
-    if (variantToRemove && variantToRemove.imageUrl) {
-      const publicId = extractPublicIdFromUrl(variantToRemove.imageUrl);
-      if (publicId) {
-        try {
-          const { deleteBatchFromCloudinary } = require("../upload/upload.service.js");
-          const deleteResult = await deleteBatchFromCloudinary([publicId]);
-          console.log(`[Variant Delete] Deleted variant image from Cloudinary: ${publicId}`);
-        } catch (error) {
-          console.error(`[Variant Delete] Failed to delete variant image from Cloudinary:`, error);
-          // Continue with variant removal even if Cloudinary deletion fails
-        }
-      }
-    }
-
-    product.option = product.option.filter(
-      (opt) => opt._id.toString() !== variantId
-    );
-
-    if (product.option.length === initialLength) {
-      // No variant was removed (variantId not found)
-      return null;
-    }
-
-    // Check if the deleted variant's image was used as main image
-    // If so, replace it with another option's image
-    if (variantToRemove && variantToRemove.imageUrl) {
-      const variantImageUsedAsMain = product.imageUrls && 
-        product.imageUrls.includes(variantToRemove.imageUrl);
-      
-      if (variantImageUsedAsMain) {
-        console.log(`[Variant Delete] Removed variant image was used as main image, replacing...`);
-        // Remove the deleted variant's image from main images
-        product.imageUrls = product.imageUrls.filter(
-          url => url !== variantToRemove.imageUrl
-        );
-      }
-    }
-
-    // Ensure product has at least one main image
-    ensureMainImage(product);
-
-    await product.save();
-    if (redisClient && redisClient.isOpen) {
-      await redisClient.del(`products:${productId}`).catch(() => {});
-    }
-    await invalidateAllProductCaches();
-
-    return {
-      deleted: false,
-      message: "Variant removed successfully.",
-      product,
-    };
-  } catch (error) {
-    console.error("Error removing variant:", error);
-    throw new Error("Failed to remove variant.");
+/**
+ * Remove variant from product doc; if it was the only variant delete product
+ * Returns: { deleted: boolean, product?: mongooseDoc, removedVariantImageUrl?: string, publicIdsToCleanup?: string[], vendorId }
+ */
+async function removeVariantData(productId, variantId) {
+  if (!isValidObjectId(productId)) {
+    throw createError("Invalid product ID", 400);
   }
+  if (!isValidObjectId(variantId)) {
+    throw createError("Invalid variant ID", 400);
+  }
+
+  // Fetch current product once for logging and decision making
+  const product = await Product.findById(productId);
+  if (!product) {
+    throw createError("Product not found", 404);
+  }
+
+  console.log(`[removeVariantData] Product ${productId} has ${product.option?.length || 0} options`);
+
+  const variantToRemove = product.option.find((opt) => opt._id.toString() === variantId);
+  if (!variantToRemove) {
+    throw createError("Variant not found", 404);
+  }
+
+  // If only one variant existed at read time, attempt an atomic delete of product
+  if ((product.option?.length || 0) <= 1) {
+    const deleted = await Product.findOneAndDelete({ _id: productId, 'option._id': variantId });
+
+    if (!deleted) {
+      // Could be a concurrent modification
+      throw createError('Product not found', 404);
+    }
+
+    // Gather all image URLs from deleted document
+    const imageUrls = [];
+    if (deleted.imageUrls && Array.isArray(deleted.imageUrls)) imageUrls.push(...deleted.imageUrls);
+    if (deleted.option && Array.isArray(deleted.option)) deleted.option.forEach((v) => { if (v.imageUrl) imageUrls.push(v.imageUrl); });
+
+    const publicIds = imageUrls.map((u) => extractPublicIdFromUrl(u)).filter((id) => id !== null);
+
+    return { deleted: true, publicIdsToCleanup: publicIds, vendorId: deleted.vendorId };
+  }
+
+  // Otherwise remove the variant atomically using $pull; then recalc aggregates from the returned doc
+  const updated = await Product.findOneAndUpdate(
+    { _id: productId, 'option._id': variantId },
+    { $pull: { option: { _id: variantId } } },
+    { new: true }
+  );
+
+  if (!updated) {
+    // Variant or product might have been removed concurrently
+    throw createError('Variant not found', 404);
+  }
+
+  // Find image url of removed variant from earlier read (variantToRemove)
+  const removedVariantImageUrl = variantToRemove.imageUrl || null;
+
+  // Recalculate aggregates on updated doc
+  updated.stock = (updated.option || []).reduce((sum, o) => sum + (o.stock || 0), 0);
+  updated.sold = (updated.option || []).reduce((sum, o) => sum + (o.sold || 0), 0);
+  updated.isOption = (updated.option || []).length > 0;
+
+  await updated.save();
+
+  return { deleted: false, product: updated, removedVariantImageUrl, vendorId: updated.vendorId };
+}
+
+/**
+ * Reassign main image if it referenced the removed variant image URL
+ * Returns { modified: boolean }
+ */
+function reassignMainImageIfNeeded(product, removedVariantImageUrl) {
+  if (!product || !removedVariantImageUrl) return { modified: false };
+
+  const usedAsMain = product.imageUrls && product.imageUrls.includes(removedVariantImageUrl);
+  if (!usedAsMain) return { modified: false };
+
+  product.imageUrls = product.imageUrls.filter((u) => u !== removedVariantImageUrl);
+  ensureMainImage(product);
+  return { modified: true };
+}
+
+/**
+ * Cleanup images from Cloudinary safely using upload.service safeDeleteBatch
+ * Returns the raw result from safeDeleteBatch
+ */
+async function cleanupVariantImages(publicIds) {
+  if (!Array.isArray(publicIds) || publicIds.length === 0) return { successful: 0, failed: 0, total: 0 };
+  try {
+    const uploadService = require('../upload/upload.service.js');
+    const result = await uploadService.safeDeleteBatch(publicIds);
+    return result;
+  } catch (err) {
+    console.error('[cleanupVariantImages] Unexpected error:', err);
+    return { successful: 0, failed: publicIds.length, total: publicIds.length, failedDetails: publicIds.map(id => ({ publicId: id, reason: 'error', error: err.message })) };
+  }
+}
+
+/**
+ * Public removeVariant - orchestrates the smaller helpers
+ */
+async function removeVariant(productId, variantId) {
+  // 1) Remove data
+  const dataResult = await removeVariantData(productId, variantId);
+
+  // If product deleted entirely
+  if (dataResult.deleted) {
+    // Cleanup images if any
+    if (dataResult.publicIdsToCleanup && dataResult.publicIdsToCleanup.length > 0) {
+      const cleanupResult = await cleanupVariantImages(dataResult.publicIdsToCleanup);
+      console.log(`[removeVariant] cleanup result: ${cleanupResult.successful}/${cleanupResult.total} removed`);
+    }
+
+    // Invalidate caches
+    await cache.delete(`products:${productId}`);
+    await invalidateAllProductCaches(productId, dataResult.vendorId);
+
+    return { deleted: true, message: 'Product deleted since only one variant existed.' };
+  }
+
+  // 2) If variant removed from product, perform image cleanup for that variant only
+  const publicIds = [];
+  if (dataResult.removedVariantImageUrl) {
+    const publicId = extractPublicIdFromUrl(dataResult.removedVariantImageUrl);
+    if (publicId) publicIds.push(publicId);
+  }
+
+  if (publicIds.length > 0) {
+    const cleanupResult = await cleanupVariantImages(publicIds);
+    console.log(`[removeVariant] variant image cleanup result: ${cleanupResult.successful}/${cleanupResult.total}`);
+  }
+
+  // 3) Reassign main image if needed
+  const { product, removedVariantImageUrl } = dataResult;
+  const reassigned = reassignMainImageIfNeeded(product, removedVariantImageUrl);
+  if (reassigned.modified) {
+    await product.save();
+  }
+
+  // 4) Invalidate caches
+  await cache.delete(`products:${productId}`);
+  await invalidateAllProductCaches(productId, dataResult.vendorId);
+
+  return { deleted: false, message: 'Variant removed successfully.', product };
 }
 
 async function getProductOrThrow(productId) {
@@ -871,26 +734,22 @@ async function getProductOrThrow(productId) {
 }
 
 async function addSingleOption(productId, optionData) {
-  const product = await getProductOrThrow(productId);
-
-  // Validate
-  const errors = validateOptionPayload(optionData);
-  if (errors.length) {
-    const err = new Error(errors.join(", "));
-    err.status = 400;
-    throw err;
+  if (!isValidObjectId(productId)) {
+    throw createError("Invalid product ID", 400);
   }
 
+  // Validate payload
+  const errors = validateOptionPayload(optionData);
+  if (errors.length) {
+    throw createError(errors.join(", "), 400);
+  }
+
+  // If a label is provided, ensure uniqueness (case-insensitive)
   if (optionData.label) {
-    const exists = product.option.some(
-      (o) => (o.label || "").toLowerCase() === optionData.label.toLowerCase()
-    );
-    if (exists) {
-      const err = new Error(
-        "Option with this label already exists for this product"
-      );
-      err.status = 409;
-      throw err;
+    const labelRegex = new RegExp(`^${optionData.label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$$`, "i");
+    const conflict = await Product.findOne({ _id: productId, "option.label": { $regex: labelRegex } }).select("_id");
+    if (conflict) {
+      throw createError("Option with this label already exists for this product", 409);
     }
   }
 
@@ -903,18 +762,29 @@ async function addSingleOption(productId, optionData) {
     sold: optionData.sold ?? 0,
   };
 
-  product.option.push(newOption);
+  // Use atomic update: push option and increment product aggregates
+  const updated = await Product.findOneAndUpdate(
+    { _id: productId },
+    {
+      $push: { option: newOption },
+      $inc: { stock: newOption.stock || 0, sold: newOption.sold || 0 },
+      $set: { isOption: true },
+    },
+    { new: true }
+  );
 
-  product.stock = product.option.reduce((sum, o) => sum + (o.stock || 0), 0);
-  product.sold = product.option.reduce((sum, o) => sum + (o.sold || 0), 0);
-  product.isOption = product.option.length > 0;
+  if (!updated) {
+    throw createError("Product not found", 404);
+  }
 
-  // Ensure product has at least one main image
-  ensureMainImage(product);
+  // Ensure main image if none existed before and option has image
+  const wasModified = ensureMainImage(updated);
+  if (wasModified) {
+    await updated.save();
+  }
 
-  await product.save();
-  await invalidateAllProductCaches();
-  return product;
+  await invalidateAllProductCaches(productId, updated.vendorId);
+  return updated;
 }
 
 module.exports = {
@@ -932,6 +802,9 @@ module.exports = {
   getVendorOwnProducts,
   updateProductOptionService,
   removeVariant,
+  removeVariantData,
+  cleanupVariantImages,
+  reassignMainImageIfNeeded,
   addProductStock,
   addProductStockMain,
   ensureMainImage,

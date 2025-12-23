@@ -66,7 +66,68 @@ function isRedisAvailable() {
   return isRedisConnected && client.isOpen;
 }
 
+/**
+ * Safely delete keys (single key string or array of keys). Won't throw if client closed.
+ * @param {string|string[]} keys
+ */
+async function safeDel(keys) {
+  if (!isRedisAvailable()) return;
+  try {
+    if (!keys) return;
+    if (typeof keys === "string") {
+      await client.del(keys);
+      return;
+    }
+    if (Array.isArray(keys) && keys.length) {
+      await client.del(...keys);
+    }
+  } catch (err) {
+    console.warn("safeDel failed:", err.message);
+  }
+}
+
+
+async function zAddSafe(key, score, value, ttlSec) {
+  if (!isRedisAvailable()) return false;
+  
+  try {
+    await client.zAdd(key, { score, value });
+    if (ttlSec) await client.expire(key, ttlSec);
+    return true;
+  } catch (err) {
+    console.warn(`zAddSafe failed for key "${key}":`, err.message);
+    return false;
+  }
+}
+
+/**
+ * Safely get cardinality of sorted set
+ */
+async function zCardSafe(key) {
+  if (!isRedisAvailable()) return 0;
+  try {
+    return await client.zCard(key);
+  } catch (err) {
+    console.warn(`zCardSafe failed for key "${key}":`, err.message);
+    return 0;
+  }
+}
+
+async function zRemRangeByScoreSafe(key, min, max) {
+  if (!isRedisAvailable()) return 0;
+  try {
+    return await client.zRemRangeByScore(key, min, max);
+  } catch (err) {
+    console.warn(`zRemRangeByScoreSafe failed for key "${key}":`, err.message);
+    return 0;
+  }
+}
+
 module.exports = client;
 module.exports.connectRedis = connectRedis;
 module.exports.isRedisAvailable = isRedisAvailable;
 module.exports.getRedisClient = getRedisClient;
+module.exports.safeDel = safeDel;
+module.exports.zAddSafe = zAddSafe;
+module.exports.zCardSafe = zCardSafe;
+module.exports.zRemRangeByScoreSafe = zRemRangeByScoreSafe;

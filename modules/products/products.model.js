@@ -92,6 +92,11 @@ ProductSchema.index({ isDisabled: 1 });
 ProductSchema.index({ status: 1, createdAt: -1 });
 ProductSchema.index({ vendorId: 1, status: 1 });
 
+// Text index for search on common fields
+ProductSchema.index({ name: 'text', description: 'text', categories: 'text' });
+// Municipality + status compound index for efficient municipality queries
+ProductSchema.index({ municipality: 1, status: 1 });
+
 // Virtual for checking if a product has an active promotion
 ProductSchema.virtual('hasPromotion').get(function() {
   // A promotion is active if the flag is true and it's not scheduled for the future or already expired.

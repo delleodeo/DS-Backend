@@ -32,7 +32,8 @@ exports.createVendor = async (vendorData, vendorId) => {
 exports.followVendor = async (vendorId, userId) => {
 	try {
 		if (isRedisAvailable()) {
-			await redisClient.del(`vendor:details:${vendorId}`);
+			const { safeDel } = require('../../config/redis');
+			await safeDel(`vendor:details:${vendorId}`);
 		}
 
 		const vendor = await Vendor.findOne({ userId: vendorId });
@@ -150,7 +151,7 @@ exports.getVendorDetails = async (vendorId) => {
 		});
 
 		// Get total reviews for this vendor's products
-		const Review = require('../reviews/reviews.model');
+		const Review = require('../reviews/review.model');
 		const totalReviews = await Review.countDocuments({
 			vendor: vendorId
 		});
@@ -223,7 +224,8 @@ exports.deleteVendor = async (id) => {
 	if (!deleted) throw new Error("Vendor not found or already deleted");
 
 	if (isRedisAvailable()) {
-		await redisClient.del(getVendorCacheKey(id));
+		const { safeDel } = require('../../config/redis');
+		await safeDel(getVendorCacheKey(id));
 	}
 };
 
@@ -325,7 +327,8 @@ exports.pushMonthlyRevenue = async (
 		await vendor.save();
 
 		// Clear cache
-		await redisClient.del(getVendorCacheKey(userId));
+		const { safeDel } = require('../../config/redis');
+		await safeDel(getVendorCacheKey(userId));
 
 		return {
 			success: true,
@@ -364,7 +367,8 @@ exports.resetCurrentMonthRevenue = async (userId) => {
 		await vendor.save();
 
 		// Clear cache
-		await redisClient.del(getVendorCacheKey(userId));
+		const { safeDel } = require('../../config/redis');
+		await safeDel(getVendorCacheKey(userId));
 
 		return {
 			success: true,

@@ -228,7 +228,8 @@ module.exports = {
       });
     } catch (error) {
       console.error("Error deleting variant:", error);
-      res.status(500).json({ message: "Internal server error" });
+      const status = error?.status || 500;
+      res.status(status).json({ message: error.message || "Internal server error" });
     }
   },
 

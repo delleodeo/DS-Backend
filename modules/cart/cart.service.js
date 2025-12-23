@@ -153,7 +153,8 @@ exports.removeCartItemService = async (userId, productId, optionId) => {
 	cart.updatedAt = new Date();
 	await cart.save();
 	if (isRedisAvailable()) {
-		await redisClient.del(getCacheKey(userId)).catch(() => {});
+		const { safeDel } = require('../../config/redis');
+		await safeDel(getCacheKey(userId));
 	}
 	console.log("Removing item: END");
 	console.log(JSON.stringify({ productId, optionId }));
@@ -190,7 +191,8 @@ exports.invalidateAllCartCaches = async () => {
 		
 		if (cartKeys.length > 0) {
 			// Delete all cart cache keys
-			await redisClient.del(...cartKeys).catch(() => {});
+			const { safeDel } = require('../../config/redis');
+			await safeDel(cartKeys);
 			console.log(`✅ Invalidated ${cartKeys.length} cart cache entries`);
 		} else {
 			console.log("No cart caches found to invalidate");

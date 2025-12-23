@@ -201,6 +201,26 @@ async function deleteBatchFromCloudinary(publicIds) {
   }
 }
 
+// Safe wrapper that never throws - returns aggregated result even on full failures
+async function safeDeleteBatch(publicIds) {
+  try {
+    if (!Array.isArray(publicIds) || publicIds.length === 0) {
+      return { successful: 0, failed: 0, total: 0, successfulIds: [], failedDetails: [] };
+    }
+
+    const result = await deleteBatchFromCloudinary(publicIds).catch((err) => {
+      // Log and return a failure result rather than throwing
+      console.error('[Safe Cloudinary Delete] Underlying delete error:', err.message);
+      return { successful: 0, failed: publicIds.length, total: publicIds.length, successfulIds: [], failedDetails: publicIds.map(id => ({ publicId: id, reason: 'error', error: err.message })) };
+    });
+
+    return result;
+  } catch (err) {
+    console.error('[Safe Cloudinary Delete] Unexpected error:', err);
+    return { successful: 0, failed: publicIds.length || 0, total: publicIds.length || 0, successfulIds: [], failedDetails: publicIds.map(id => ({ publicId: id, reason: 'error', error: err.message })) };
+  }
+}
+
 /**
  * Mark temporary image as permanent
  * @param {string} publicId - Cloudinary public_id
@@ -355,6 +375,7 @@ module.exports = {
   uploadDocuments,
   deleteFromCloudinary,
   deleteBatchFromCloudinary,
+  safeDeleteBatch,
   markAsPermanent,
   cleanupOldTempImages,
   extractPublicIdFromUrl,
