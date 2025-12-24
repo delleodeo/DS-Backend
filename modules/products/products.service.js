@@ -1,19 +1,23 @@
 let redisClient;
 try {
-  redisClient = require("../../config/redis");
+  const redisModule = require("../../config/redis");
+  // Support modules that export either the client directly or a factory getRedisClient()
+  redisClient = typeof redisModule.getRedisClient === 'function' ? redisModule.getRedisClient() : redisModule;
 } catch (e) {
-  console.warn("Redis client not available, falling back to MongoDB only.");
+  const logger = require("../../utils/logger");
+  logger.warn("Redis client not available, falling back to MongoDB only.");
   redisClient = null;
-}
+} 
 const Product = require("./products.model.js");
 const Admin = require("../admin/admin.model.js");
 const Vendor = require("../vendors/vendors.model.js");
-const { validateOptionPayload } = require("../../utils/validateOption.js");
+// validateOptionPayload re-exported from productUtils to allow easy mocking in tests
+const { validateOptionPayload } = require("./product-utils/productUtils.js");
 const {
   deleteBatchFromCloudinary,
   extractPublicIdFromUrl,
 } = require("../upload/upload.service.js");
-const CacheUtils = require("./cacheUtils.js");
+const TagBasedCacheService = require("./product-utils/tagBasedCache.js");
 const {
   validateAndCleanPromotions,
   ensureMainImage,
@@ -23,27 +27,37 @@ const {
   buildSearchQuery,
   buildCategoryQuery,
   buildMunicipalityQuery,
-} = require("./productUtils.js");
+} = require("./product-utils/productUtils.js");
 
-const cache = new CacheUtils(redisClient);
-const redisKey = "products:all";
+const cache = new TagBasedCacheService(redisClient);
 const mongoose = require("mongoose");
+const logger = require("../../utils/logger");
 
-async function invalidateAllProductCaches(productId, vendorId = null) {
-  // Invalidate specific product cache
-  await cache.delete(`products:${productId}`);
+async function invalidateAllProductCaches(productId, vendorId = null, categories = [], municipality = null) {
+  const tags = ['products'];
 
-  // Invalidate vendor-related caches
-  if (vendorId) {
-    await cache.delete(`product:vendor:${vendorId}:approved`);
-    await cache.delete(`product:vendor:${vendorId}:own:all`);
+  if (productId) {
+    tags.push(`product:${productId}`);
   }
 
-  // Invalidate patterns that might be affected (more selective than all)
-  await cache.deletePattern(`products:approved:category:*`);
-  await cache.deletePattern(`products:search:*`);
-  await cache.deletePattern(`products:municipality:*`);
-}
+  if (vendorId) {
+    tags.push(`vendor:${vendorId}`);
+  }
+
+  if (categories && categories.length > 0) {
+    categories.forEach(category => tags.push(`category:${category}`));
+  }
+
+  if (municipality) {
+    tags.push(`municipality:${municipality}`);
+  }
+
+  try {
+    await cache.invalidateByTags(tags);
+  } catch (err) {
+    logger.warn('[invalidateAllProductCaches] Cache invalidation encountered an error:', err);
+  }
+} 
 
 // Product status constants
 const PRODUCT_STATUS = {
@@ -54,11 +68,11 @@ const PRODUCT_STATUS = {
 
 async function getPaginatedProducts(skip, limit) {
   const { limit: limitNum, skip: skipNum } = sanitizePagination(limit, skip);
-  const redisPageKey = `products:approved:skip:${skipNum}:limit:${limitNum}`;
+  const cacheKey = cache.generateKey('products:approved', `skip:${skipNum}`, `limit:${limitNum}`);
 
-  let paginatedProducts = await cache.get(redisPageKey);
+  let paginatedProducts = await cache.get(cacheKey);
   if (paginatedProducts) {
-    console.log("Redis cache hit:", redisPageKey);
+    logger.debug(`Redis cache hit: ${cacheKey}`);
   } else {
     // Only return approved products for public listing (buyers)
     paginatedProducts = await Product.find({
@@ -71,10 +85,8 @@ async function getPaginatedProducts(skip, limit) {
       .lean({ virtuals: true });
 
     if (cache.isAvailable()) {
-      await cache.set(redisPageKey, paginatedProducts, 300); // 5 min TTL
-      console.log(
-        `Cached approved products page skip=${skipNum}, limit=${limitNum}`
-      );
+      await cache.set(cacheKey, paginatedProducts, 300, ['products', 'products:approved']);
+      logger.info(`Cached approved products page skip=${skipNum}, limit=${limitNum}`);
     }
   }
 
@@ -108,12 +120,20 @@ async function createProductService(data) {
 
 async function getProductsByCategoryService(category, limit, skip) {
   const { limit: limitNum, skip: skipNum } = sanitizePagination(limit, skip);
+
+  if (typeof category !== 'string' || category.trim().length === 0) {
+    throw createError('Invalid category', 400);
+  }
+  if (category.length > 128) {
+    throw createError('Category too long', 400);
+  }
+
   const normalizeCategory = category.toLowerCase().trim();
-  const cacheKey = `products:approved:category:${normalizeCategory}:limit:${limitNum}:skip:${skipNum}`;
+  const cacheKey = `products:approved:category:${normalizeCategory}:limit:${limitNum}:skip:${skipNum}`; 
 
   let paginated = await cache.get(cacheKey);
   if (paginated) {
-    console.log("Redis cache hit:", cacheKey);
+    logger.debug(`Redis cache hit: ${cacheKey}`);
     return paginated;
   }
 
@@ -142,13 +162,19 @@ async function getProductsByCategoryService(category, limit, skip) {
 // get product by municipality
 async function getProductByMunicipality(municipality, category, limit, skip) {
   const { limit: limitNum, skip: skipNum } = sanitizePagination(limit, skip);
+  if (typeof municipality !== 'string' || typeof category !== 'string') {
+    throw createError('Invalid municipality or category', 400);
+  }
+  if (municipality.length > 128 || category.length > 128) {
+    throw createError('Municipality or category too long', 400);
+  }
   const normalizeMunicipality = municipality.toLowerCase().trim();
   const normalizeCategory = category.toLowerCase().trim();
-  const cacheKey = `products:approved:municipality:${normalizeMunicipality}:${normalizeCategory}:limit:${limitNum}:skip:${skipNum}`;
+  const cacheKey = `products:approved:municipality:${normalizeMunicipality}:${normalizeCategory}:limit:${limitNum}:skip:${skipNum}`; 
 
   let paginated = await cache.get(cacheKey);
   if (paginated) {
-    console.log("Redis cache hit:", cacheKey);
+    logger.debug(`Redis cache hit: ${cacheKey}`);
     return paginated;
   }
 
@@ -191,13 +217,12 @@ async function getProductByMunicipality(municipality, category, limit, skip) {
 
 // related products
 async function getRelatedProducts(productId, limit = 6) {
-  const _id =
-    typeof productId === "string"
-      ? new mongoose.Types.ObjectId(productId)
-      : productId;
+  if (!isValidObjectId(productId)) {
+    throw createError('Invalid product ID', 400);
+  }
 
-  const currentProduct = await Product.findById(_id).lean();
-  if (!currentProduct) throw new Error("Product not found");
+  const currentProduct = await Product.findById(productId).lean();
+  if (!currentProduct) throw createError('Product not found', 404);
 
   const categories = Array.isArray(currentProduct.categories)
     ? currentProduct.categories
@@ -205,31 +230,70 @@ async function getRelatedProducts(productId, limit = 6) {
 
   if (categories.length === 0) return [];
 
-  // ✅ Find products that share at least ONE category (only approved products)
-  const related = await Product.find({
-    _id: { $ne: _id },
-    stock: { $gt: 0 },
-    status: PRODUCT_STATUS.APPROVED,
-    isDisabled: { $ne: true },
-    categories: { $in: categories }, // <-- Matches if ANY category overlaps
-  })
-    .sort({ updatedAt: -1 }) // newest first
-    .limit(limit)
-    .lean({ virtuals: true });
+  // Limit to top 3 categories for better performance and relevance
+  const topCategories = categories.slice(0, 3);
+
+  // Use aggregation pipeline for score-based ranking
+  const related = await Product.aggregate([
+    {
+      $match: {
+        _id: { $ne: mongoose.Types.ObjectId(productId) },
+        stock: { $gt: 0 },
+        status: PRODUCT_STATUS.APPROVED,
+        isDisabled: { $ne: true },
+        categories: { $in: topCategories }
+      }
+    },
+    {
+      // Calculate relevance score based on category matches and other factors
+      $addFields: {
+        relevanceScore: {
+          $add: [
+            // Base score for category match
+            { $size: { $setIntersection: ['$categories', topCategories] } },
+            // Boost for higher ratings
+            { $multiply: ['$averageRating', 0.5] },
+            // Boost for more sales
+            { $multiply: [{ $log10: { $add: ['$sold', 1] } }, 0.3] },
+            // Boost for higher stock (availability)
+            { $multiply: [{ $log10: { $add: ['$stock', 1] } }, 0.2] }
+          ]
+        }
+      }
+    },
+    {
+      $sort: {
+        relevanceScore: -1, // Highest relevance first
+        averageRating: -1,  // Then by rating
+        sold: -1,           // Then by sales
+        createdAt: -1       // Finally by recency
+      }
+    },
+    {
+      $limit: limit
+    }
+  ]);
 
   return related;
 }
 
 async function searchProductsService(query, limit = 0, skip = 0) {
+  if (typeof query !== 'string' || query.trim().length === 0) {
+    throw createError('Search query must be a non-empty string', 400);
+  }
+  if (query.length > 256) {
+    throw createError('Search query too long', 400);
+  }
+
   const terms = query.toLowerCase().trim().split(/\s+/);
   const { limit: limitNum, skip: skipNum } = sanitizePagination(limit, skip);
   const cacheKey = `products:search:${terms.join(
     "-"
-  )}:limit:${limitNum}:skip:${skipNum}`;
+  )}:limit:${limitNum}:skip:${skipNum}`; 
 
   let paginated = await cache.get(cacheKey);
   if (paginated) {
-    console.log("Redis cache hit:", cacheKey);
+    logger.debug(`Redis cache hit: ${cacheKey}`);
     return paginated;
   }
 
@@ -238,14 +302,25 @@ async function searchProductsService(query, limit = 0, skip = 0) {
     isDisabled: { $ne: true },
   };
 
-  const searchQuery = buildSearchQuery(terms);
-  const queryObj = { ...baseQuery, ...searchQuery };
+  // Prefer MongoDB text search for performance if supported; fallback to regex search
+  try {
+    const textQuery = { $text: { $search: query } };
+    paginated = await Product.find({ ...baseQuery, ...textQuery }, { score: { $meta: "textScore" } })
+      .sort({ score: { $meta: "textScore" }, createdAt: -1 })
+      .skip(skipNum)
+      .limit(limitNum > 0 ? limitNum : 0)
+      .lean({ virtuals: true });
+  } catch (err) {
+    // If $text fails (e.g., no text index), fall back to regex-based search
+    const searchQuery = buildSearchQuery(terms);
+    const queryObj = { ...baseQuery, ...searchQuery };
 
-  paginated = await Product.find(queryObj)
-    .sort({ createdAt: -1 })
-    .skip(skipNum)
-    .limit(limitNum > 0 ? limitNum : 0)
-    .lean({ virtuals: true });
+    paginated = await Product.find(queryObj)
+      .sort({ createdAt: -1 })
+      .skip(skipNum)
+      .limit(limitNum > 0 ? limitNum : 0)
+      .lean({ virtuals: true });
+  }
 
   if (cache.isAvailable() && paginated.length > 0) {
     await cache.set(cacheKey, paginated, 600); // 10 min TTL
@@ -264,7 +339,7 @@ async function getProductByVendor(vendorId, limit = 15, skip = 0) {
 
   let products = await cache.get(cacheKey);
   if (products) {
-    console.log("Redis cache hit:", cacheKey);
+    logger.debug(`Redis cache hit: ${cacheKey}`);
     return products;
   }
 
@@ -321,9 +396,10 @@ async function getProductByIdService(id) {
   let productWithVendorProfile = await cache.get(cacheKey);
 
   if (productWithVendorProfile) {
-    // Validate promotions even on cached data to ensure accuracy
-    validateAndCleanPromotions(productWithVendorProfile);
-    return productWithVendorProfile;
+    // Clone cached object before any mutation to avoid side-effects on shared cache
+    const cloned = JSON.parse(JSON.stringify(productWithVendorProfile));
+    validateAndCleanPromotions(cloned);
+    return cloned;
   }
 
   const productDoc = await Product.findById(id);
@@ -469,7 +545,7 @@ async function addProductStockMain(productId, addition) {
     throw createError("Invalid product ID", 400);
   }
 
-  console.log("type", typeof addition);
+  logger.debug(`addProductStockMain addition type: ${typeof addition}`);
   if (typeof addition !== "number" || Number.isNaN(addition)) {
     throw createError("Addition value must be a number", 400);
   }
@@ -496,7 +572,7 @@ async function deleteProductService(id) {
 
   const PRODUCT_BY_ID_KEY = `products:${id}`;
 
-  console.log(`[Product Delete] Starting deletion for product ${id}`);
+  logger.info(`[Product Delete] Starting deletion for product ${id}`);
 
   // Use transaction for DB operations
   const session = await mongoose.startSession();
@@ -518,9 +594,7 @@ async function deleteProductService(id) {
       .map((url) => {
         const publicId = extractPublicIdFromUrl(url);
         if (!publicId) {
-          console.warn(`
-            [Product Delete] Failed to extract public_id from URL: ${url}`
-          );
+          logger.warn(`[Product Delete] Failed to extract public_id from URL: ${url}`);
         }
         return publicId;
       })
@@ -532,37 +606,25 @@ async function deleteProductService(id) {
     if (publicIds.length > 0) {
       try {
         const deleteResult = await deleteBatchFromCloudinary(publicIds);
-        console.log(
-          `[Product Delete] Cloudinary deletion result: ${deleteResult.successful}/${deleteResult.total} images deleted successfully`
-        );
+        logger.info(`[Product Delete] Cloudinary deletion result: ${deleteResult.successful}/${deleteResult.total} images deleted successfully`);
 
         if (deleteResult.failed > 0) {
-          console.error(
-            `[Product Delete] Failed to delete ${deleteResult.failed} images from Cloudinary`
-          );
-          console.error(
-            "[Product Delete] Deletion details:",
-            JSON.stringify(deleteResult.details, null, 2)
-          );
+          logger.error(`[Product Delete] Failed to delete ${deleteResult.failed} images from Cloudinary`);
+          logger.error("[Product Delete] Deletion details:", JSON.stringify(deleteResult.details, null, 2));
         }
       } catch (error) {
-        console.error(
-          `[Product Delete] Exception during Cloudinary deletion:`,
-          error
-        );
+        logger.error(`[Product Delete] Exception during Cloudinary deletion: ${error?.message || error}`, error);
         // Log error but don't fail the operation since DB is already deleted
       }
     } else {
-      console.log(`[Product Delete] No Cloudinary images to delete`);
+      logger.info(`[Product Delete] No Cloudinary images to delete`);
     }
 
     await cache.delete(PRODUCT_BY_ID_KEY);
 
     await invalidateAllProductCaches(id, deletedProduct.vendorId);
 
-    console.log(
-      `[Product Delete] Successfully deleted product ${id} from database`
-    );
+    logger.info(`[Product Delete] Successfully deleted product ${id} from database`);
 
     return true;
   } catch (error) {
@@ -593,7 +655,7 @@ async function removeVariantData(productId, variantId) {
     throw createError("Product not found", 404);
   }
 
-  console.log(`[removeVariantData] Product ${productId} has ${product.option?.length || 0} options`);
+  logger.debug(`[removeVariantData] Product ${productId} has ${product.option?.length || 0} options`);
 
   const variantToRemove = product.option.find((opt) => opt._id.toString() === variantId);
   if (!variantToRemove) {
@@ -670,7 +732,7 @@ async function cleanupVariantImages(publicIds) {
     const result = await uploadService.safeDeleteBatch(publicIds);
     return result;
   } catch (err) {
-    console.error('[cleanupVariantImages] Unexpected error:', err);
+    logger.error('[cleanupVariantImages] Unexpected error:', err);
     return { successful: 0, failed: publicIds.length, total: publicIds.length, failedDetails: publicIds.map(id => ({ publicId: id, reason: 'error', error: err.message })) };
   }
 }
@@ -687,11 +749,10 @@ async function removeVariant(productId, variantId) {
     // Cleanup images if any
     if (dataResult.publicIdsToCleanup && dataResult.publicIdsToCleanup.length > 0) {
       const cleanupResult = await cleanupVariantImages(dataResult.publicIdsToCleanup);
-      console.log(`[removeVariant] cleanup result: ${cleanupResult.successful}/${cleanupResult.total} removed`);
+      logger.info(`[removeVariant] cleanup result: ${cleanupResult.successful}/${cleanupResult.total} removed`);
     }
 
     // Invalidate caches
-    await cache.delete(`products:${productId}`);
     await invalidateAllProductCaches(productId, dataResult.vendorId);
 
     return { deleted: true, message: 'Product deleted since only one variant existed.' };
@@ -706,7 +767,7 @@ async function removeVariant(productId, variantId) {
 
   if (publicIds.length > 0) {
     const cleanupResult = await cleanupVariantImages(publicIds);
-    console.log(`[removeVariant] variant image cleanup result: ${cleanupResult.successful}/${cleanupResult.total}`);
+    logger.info(`[removeVariant] variant image cleanup result: ${cleanupResult.successful}/${cleanupResult.total}`);
   }
 
   // 3) Reassign main image if needed
@@ -717,7 +778,6 @@ async function removeVariant(productId, variantId) {
   }
 
   // 4) Invalidate caches
-  await cache.delete(`products:${productId}`);
   await invalidateAllProductCaches(productId, dataResult.vendorId);
 
   return { deleted: false, message: 'Variant removed successfully.', product };
@@ -726,12 +786,10 @@ async function removeVariant(productId, variantId) {
 async function getProductOrThrow(productId) {
   const product = await Product.findById(productId);
   if (!product) {
-    const err = new Error("Product not found");
-    err.status = 404;
-    throw err;
+    throw createError("Product not found", 404);
   }
   return product;
-}
+} 
 
 async function addSingleOption(productId, optionData) {
   if (!isValidObjectId(productId)) {
@@ -744,15 +802,6 @@ async function addSingleOption(productId, optionData) {
     throw createError(errors.join(", "), 400);
   }
 
-  // If a label is provided, ensure uniqueness (case-insensitive)
-  if (optionData.label) {
-    const labelRegex = new RegExp(`^${optionData.label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$$`, "i");
-    const conflict = await Product.findOne({ _id: productId, "option.label": { $regex: labelRegex } }).select("_id");
-    if (conflict) {
-      throw createError("Option with this label already exists for this product", 409);
-    }
-  }
-
   const newOption = {
     imageUrl: optionData.imageUrl || "",
     price: optionData.price,
@@ -762,7 +811,58 @@ async function addSingleOption(productId, optionData) {
     sold: optionData.sold ?? 0,
   };
 
-  // Use atomic update: push option and increment product aggregates
+  // If label provided, use a transaction to enforce uniqueness under concurrency
+  if (optionData.label) {
+    const session = await mongoose.startSession();
+    session.startTransaction();
+    try {
+      // Load product in transaction and check for label existence (case-insensitive)
+      const product = await Product.findById(productId).session(session);
+      if (!product) {
+        throw createError("Product not found", 404);
+      }
+
+      const labelExists = (product.option || []).some((opt) => {
+        return opt.label && opt.label.toLowerCase() === optionData.label.toLowerCase();
+      });
+
+      if (labelExists) {
+        throw createError("Option with this label already exists for this product", 409);
+      }
+
+      // Push new option and update aggregates atomically within transaction
+      await Product.updateOne(
+        { _id: productId },
+        {
+          $push: { option: newOption },
+          $inc: { stock: newOption.stock || 0, sold: newOption.sold || 0 },
+          $set: { isOption: true },
+        },
+        { session }
+      );
+
+      await session.commitTransaction();
+    } catch (err) {
+      await session.abortTransaction();
+      throw err;
+    } finally {
+      session.endSession();
+    }
+
+    // Return fresh product document
+    const updated = await Product.findById(productId);
+
+    // Ensure main image if none existed before and option has image
+    const wasModified = ensureMainImage(updated);
+    if (wasModified) {
+      await updated.save();
+    }
+
+    await invalidateAllProductCaches(productId, updated.vendorId);
+    return updated;
+  }
+
+  // Fallback for label-less options: atomic push is sufficient
   const updated = await Product.findOneAndUpdate(
     { _id: productId },
     {
@@ -777,7 +877,6 @@ async function addSingleOption(productId, optionData) {
     throw createError("Product not found", 404);
   }
 
-  // Ensure main image if none existed before and option has image
   const wasModified = ensureMainImage(updated);
   if (wasModified) {
     await updated.save();

@@ -1,4 +1,6 @@
 const mongoose = require("mongoose");
+const logger = require("../../../utils/logger");
+const { validateOptionPayload } = require('../../../utils/validateOption');
 
 /**
  * Validate and clean expired promotions from product data
@@ -26,7 +28,7 @@ function validateAndCleanPromotions(product) {
 
       if (isExpired || hasNotStarted) {
         product.promotion.isActive = false;
-        console.log(`[Real-time Validation] Deactivated ${isExpired ? 'expired' : 'not-started'} product-level promotion for product ${product._id}`);
+        logger.debug(`[Real-time Validation] Deactivated ${isExpired ? 'expired' : 'not-started'} product-level promotion for product ${product._id}`);
       }
     }
     // Attach virtuals
@@ -47,7 +49,7 @@ function validateAndCleanPromotions(product) {
 
           if (isExpired || hasNotStarted) {
             option.promotion.isActive = false;
-            console.log(`[Real-time Validation] Deactivated ${isExpired ? 'expired' : 'not-started'} option-level promotion for option ${option._id}`);
+            logger.debug(`[Real-time Validation] Deactivated ${isExpired ? 'expired' : 'not-started'} option-level promotion for option ${option._id}`);
           }
         }
         // Attach virtuals
@@ -77,7 +79,7 @@ function ensureMainImage(product) {
       const optionWithImage = product.option.find(opt => opt.imageUrl);
 
       if (optionWithImage) {
-        console.log(`[Product Image Auto-Replace] No main images found for product ${product._id}, using option image: ${optionWithImage.imageUrl}`);
+        logger.info(`[Product Image Auto-Replace] No main images found for product ${product._id}, using option image: ${optionWithImage.imageUrl}`);
         product.imageUrls = [optionWithImage.imageUrl];
         return true;
       }
@@ -124,19 +126,33 @@ function sanitizePagination(limit, skip) {
  * @param {string[]} terms - Search terms
  * @returns {Object} - MongoDB query object
  */
+function escapeRegex(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function buildSearchQuery(terms) {
   if (!terms || terms.length === 0) return {};
 
-  // Use regex for case-insensitive search on name, description, categories
-  const regexTerms = terms.map(term => new RegExp(term, 'i'));
+  // Limit number of terms and length to prevent DoS and injection attacks
+  const maxTerms = 6;
+  const maxTermLength = 64;
+  const safeTerms = terms
+    .slice(0, maxTerms)
+    .map(t => (typeof t === 'string' ? t.trim().slice(0, maxTermLength) : ''))
+    .filter(t => t.length > 0);
+
+  if (safeTerms.length === 0) return {};
+
+  // Escape user input before building regexes (prevents ReDoS and injection)
+  const escapedTerms = safeTerms.map(term => escapeRegex(term));
+
+  // Use text search for better performance and security
   return {
-    $and: regexTerms.map(term => ({
-      $or: [
-        { name: term },
-        { description: term },
-        { categories: term }
-      ]
-    }))
+    $text: {
+      $search: escapedTerms.join(' '),
+      $caseSensitive: false,
+      $diacriticSensitive: false
+    }
   };
 }
 
@@ -148,11 +164,12 @@ function buildSearchQuery(terms) {
 function buildCategoryQuery(category) {
   if (!category || category === 'all') return {};
   const normalized = category.toLowerCase().trim();
+  const escaped = escapeRegex(normalized);
   return {
     $or: [
-      { categories: new RegExp(`^${normalized}$`, 'i') },
-      { name: new RegExp(normalized, 'i') },
-      { description: new RegExp(normalized, 'i') }
+      { categories: new RegExp(`^${escaped}$`, 'i') },
+      { name: new RegExp(escaped, 'i') },
+      { description: new RegExp(escaped, 'i') }
     ]
   };
 }
@@ -164,7 +181,8 @@ function buildCategoryQuery(category) {
  */
 function buildMunicipalityQuery(municipality) {
   if (!municipality || municipality === 'all') return {};
-  return { municipality: new RegExp(`^${municipality.toLowerCase().trim()}$`, 'i') };
+  const escaped = escapeRegex(municipality.toLowerCase().trim());
+  return { municipality: new RegExp(`^${escaped}$`, 'i') };
 }
 
 module.exports = {
@@ -175,5 +193,7 @@ module.exports = {
   sanitizePagination,
   buildSearchQuery,
   buildCategoryQuery,
-  buildMunicipalityQuery
+  buildMunicipalityQuery,
+  // Re-export for easier mocking in unit tests
+  validateOptionPayload
 };

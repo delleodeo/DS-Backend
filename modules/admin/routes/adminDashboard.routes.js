@@ -71,8 +71,8 @@ router.post('/commission/:orderId/waive', adminController.waiveCommission);
 // CATEGORIES
 // ============================================
 router.get('/categories', adminController.getAllCategories);
-router.post('/categories', uploadTemp.single('image'), adminController.createCategory);
-router.put('/categories/:categoryId', uploadTemp.single('image'), adminController.updateCategory);
+router.post('/categories', uploadTemp.single('image'), require('../../upload/upload.service').tempUploadHandler, adminController.createCategory);
+router.put('/categories/:categoryId', uploadTemp.single('image'), require('../../upload/upload.service').tempUploadHandler, adminController.updateCategory);
 router.delete('/categories/:categoryId', adminController.deleteCategory);
 router.post('/categories/:categoryId/toggle', adminController.toggleCategoryStatus);
 

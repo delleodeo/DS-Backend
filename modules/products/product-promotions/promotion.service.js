@@ -1,6 +1,7 @@
-const Product = require('./products.model.js');
-const { invalidateAllProductCaches } = require('./products.service.js');
-const { invalidateAllCartCaches } = require('../cart/cart.service.js');
+const Product = require('../products.model.js');
+const { invalidateAllProductCaches } = require('../products.service.js');
+const { invalidateAllCartCaches } = require('../../cart/cart.service.js');
+const logger = require('../../../utils/logger.js');
 
 /**
  * Calculate discounted price based on promotion
@@ -101,9 +102,11 @@ async function applyPromotionToProduct(productId, promotionData) {
   );
   
   // Invalidate caches to ensure buyer-side sees updated promotion
-  await invalidateAllProductCaches();
-  await invalidateAllCartCaches();
-  console.log(`[Cache] Invalidated product and cart caches after applying product promotion`);
+  if (product) {
+    await invalidateAllProductCaches(product._id, product.vendorId);
+    await invalidateAllCartCaches();
+    logger.info(`[Cache] Invalidated product and cart caches for product ${product._id} after applying product promotion`);
+  }
   
   return product;
 }
@@ -147,9 +150,11 @@ async function applyPromotionToOption(productId, optionId, promotionData) {
   );
   
   // Invalidate caches to ensure buyer-side sees updated promotion
-  await invalidateAllProductCaches();
-  await invalidateAllCartCaches();
-  console.log(`[Cache] Invalidated product and cart caches after applying option promotion`);
+  if (product) {
+    await invalidateAllProductCaches(product._id, product.vendorId);
+    await invalidateAllCartCaches();
+    logger.info(`[Cache] Invalidated product and cart caches for product ${product._id} after applying option promotion`);
+  }
   
   return product;
 }
@@ -176,12 +181,14 @@ async function removePromotionFromProduct(productId) {
   );
   
   // Invalidate caches to ensure buyer-side sees removed promotion immediately
-  await invalidateAllProductCaches();
-  await invalidateAllCartCaches();
+  if (product) {
+    await invalidateAllProductCaches(product._id, product.vendorId);
+    await invalidateAllCartCaches();
+    logger.info(`[Cache] Invalidated product and cart caches for product ${product._id} after removing promotion`);
+  }
   
   // Log promotion removal for tracking
-  console.log(`[Promotion] Removed promotion from product ${productId}`);
-  console.log(`[Cache] Invalidated product and cart caches`);
+  logger.info(`[Promotion] Removed promotion from product ${productId}`);
   
   return product;
 }
@@ -209,12 +216,14 @@ async function removePromotionFromOption(productId, optionId) {
   );
   
   // Invalidate caches to ensure buyer-side sees removed promotion immediately
-  await invalidateAllProductCaches();
-  await invalidateAllCartCaches();
+  if (product) {
+    await invalidateAllProductCaches(product._id, product.vendorId);
+    await invalidateAllCartCaches();
+    logger.info(`[Cache] Invalidated product and cart caches for product ${product._id} after removing option promotion`);
+  }
   
   // Log promotion removal for tracking
-  console.log(`[Promotion] Removed promotion from option ${optionId} of product ${productId}`);
-  console.log(`[Cache] Invalidated product and cart caches`);
+  logger.info(`[Promotion] Removed promotion from option ${optionId} of product ${productId}`);
   
   return product;
 }
@@ -259,6 +268,14 @@ async function deactivateExpiredPromotions() {
     
     if (modified) {
       await product.save();
+      // Invalidate caches for this specific product
+      try {
+        await invalidateAllProductCaches(product._id, product.vendorId);
+        await invalidateAllCartCaches();
+        logger.info(`[Cache] Invalidated caches for product ${product._id} after expired option promotion cleanup`);
+      } catch (err) {
+        logger.warn('[deactivateExpiredPromotions] Cache invalidation error for product:', product._id, err);
+      }
     }
   }
   
@@ -268,11 +285,11 @@ async function deactivateExpiredPromotions() {
     // Invalidate all product caches including individual product caches
     await invalidateAllProductCaches();
     await invalidateAllCartCaches();
-    console.log(`[Cache] Invalidated product and cart caches after expired promotion cleanup`);
-    console.log(`[Cache] This includes individual product caches to ensure cart items show correct prices`);
+    logger.info(`[Cache] Invalidated product and cart caches after expired promotion cleanup`);
+    logger.info(`[Cache] This includes individual product caches to ensure cart items show correct prices`);
   }
   
-  console.log(`[Promotion Expiration] Deactivated ${productResult.modifiedCount} product promotions and ${optionCount} option promotions`);
+  logger.info(`[Promotion Expiration] Deactivated ${productResult.modifiedCount} product promotions and ${optionCount} option promotions`);
   
   return {
     productPromotions: productResult.modifiedCount,
@@ -287,7 +304,7 @@ async function deactivateExpiredPromotions() {
  * @returns {Promise<Array>} - Active promotions
  */
 async function getActivePromotionsByVendor(vendorId) {
-  console.log(`[Promotion Service] Fetching promotions for vendor: ${vendorId}`);
+  logger.info(`[Promotion Service] Fetching promotions for vendor: ${vendorId}`);
   
   // Convert to ObjectId if it's a string
   const mongoose = require('mongoose');
@@ -295,7 +312,7 @@ async function getActivePromotionsByVendor(vendorId) {
     ? new mongoose.Types.ObjectId(vendorId) 
     : vendorId;
   
-  console.log(`[Promotion Service] Converted vendorId to ObjectId: ${vendorObjectId}`);
+  logger.debug(`[Promotion Service] Converted vendorId to ObjectId: ${vendorObjectId}`);
   
   const products = await Product.find({
     vendorId: vendorObjectId,
@@ -305,16 +322,16 @@ async function getActivePromotionsByVendor(vendorId) {
     ]
   }).select('name price promotion option');
   
-  console.log(`[Promotion Service] Found ${products.length} products with active promotions`);
+  logger.info(`[Promotion Service] Found ${products.length} products with active promotions`);
   
   const activePromotions = [];
   
   products.forEach(product => {
-    console.log(`[Promotion Service] Checking product: ${product.name} (${product._id})`);
+    logger.debug(`[Promotion Service] Checking product: ${product.name} (${product._id})`);
     
     // Check product-level promotion
     if (product.promotion?.isActive && isPromotionValid(product.promotion)) {
-      console.log(`[Promotion Service] Adding product-level promotion for: ${product.name}`);
+      logger.debug(`[Promotion Service] Adding product-level promotion for: ${product.name}`);
       activePromotions.push({
         productId: product._id,
         productName: product.name,
@@ -330,7 +347,7 @@ async function getActivePromotionsByVendor(vendorId) {
     if (product.option) {
       product.option.forEach(option => {
         if (option.promotion?.isActive && isPromotionValid(option.promotion)) {
-          console.log(`[Promotion Service] Adding option-level promotion for: ${product.name} - ${option.label}`);
+          logger.debug(`[Promotion Service] Adding option-level promotion for: ${product.name} - ${option.label}`);
           activePromotions.push({
             productId: product._id,
             productName: product.name,
@@ -347,7 +364,7 @@ async function getActivePromotionsByVendor(vendorId) {
     }
   });
   
-  console.log(`[Promotion Service] Returning ${activePromotions.length} active promotions`);
+  logger.info(`[Promotion Service] Returning ${activePromotions.length} active promotions`);
   return activePromotions;
 }
 

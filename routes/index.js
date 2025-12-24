@@ -3,7 +3,7 @@ const router = express.Router();
 const { protect, restrictTo } = require("../auth/auth.controller.js");
 
 const productRoutes = require("../modules/products/products.routes");
-const promotionRoutes = require("../modules/products/promotion.routes");
+const promotionRoutes = require("../modules/products/product-promotions/promotion.routes.js");
 const cartRoutes = require("../modules/cart/cart.routes");
 const orderRoutes = require("../modules/orders/orders.routes");
 const userRoutes = require("../modules/users/users.routes");

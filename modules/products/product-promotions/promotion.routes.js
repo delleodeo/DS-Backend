@@ -1,6 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
+const { protect } = require('../../../auth/auth.controller.js');
+const rateLimiter = require('../../../utils/rateLimiter.js');
+const { verifyOwnership } = require('../product-utils/products.auth.js');
+const logger = require('../../../utils/logger.js');
 const {
   applyPromotionToProduct,
   applyPromotionToOption,
@@ -23,7 +27,7 @@ function validateObjectId(id, fieldName) {
  * Apply promotion to product
  * POST /api/products/:productId/promotion
  */
-router.post('/:productId/promotion', async (req, res) => {
+router.post('/:productId/promotion', protect, rateLimiter({ windowSec: 60, maxRequests: 10, keyPrefix: 'apply-product-promotion' }), verifyOwnership, async (req, res) => {
   try {
     const { productId } = req.params;
     const promotionData = req.body;
@@ -40,7 +44,7 @@ router.post('/:productId/promotion', async (req, res) => {
       return res.status(400).json({ message: 'discountValue is required' });
     }
     
-    console.log(`[Promotion] Applying promotion to product ${productId}:`, promotionData);
+    logger.info(`[Promotion] Applying promotion to product ${productId}`);
     
     const product = await applyPromotionToProduct(productId, promotionData);
     
@@ -48,14 +52,14 @@ router.post('/:productId/promotion', async (req, res) => {
       return res.status(404).json({ message: 'Product not found' });
     }
     
-    console.log(`[Promotion] Successfully applied promotion to product ${productId}`);
+    logger.info(`[Promotion] Successfully applied promotion to product ${productId}`);
     
     res.json({ 
       message: 'Promotion applied successfully', 
       product 
     });
   } catch (error) {
-    console.error('Apply promotion error:', error);
+    logger.error('Apply promotion error:', error);
     res.status(400).json({ message: error.message });
   }
 });
@@ -64,13 +68,13 @@ router.post('/:productId/promotion', async (req, res) => {
  * Apply promotion to product option
  * POST /api/products/:productId/option/:optionId/promotion
  */
-router.post('/:productId/option/:optionId/promotion', async (req, res) => {
+router.post('/:productId/option/:optionId/promotion', protect, rateLimiter({ windowSec: 60, maxRequests: 10, keyPrefix: 'apply-option-promotion' }), verifyOwnership, async (req, res) => {
   try {
     const { productId, optionId } = req.params;
     const promotionData = req.body;
     
-    console.log(`[Promotion] Route hit: POST /products/${productId}/option/${optionId}/promotion`);
-    console.log(`[Promotion] Request body:`, promotionData);
+    logger.debug(`[Promotion] Route hit: POST /products/${productId}/option/${optionId}/promotion`);
+    logger.debug(`[Promotion] Request body: ${JSON.stringify(promotionData)}`);
     
     // Validate productId and optionId
     validateObjectId(productId, 'productId');
@@ -85,23 +89,23 @@ router.post('/:productId/option/:optionId/promotion', async (req, res) => {
       return res.status(400).json({ message: 'discountValue is required' });
     }
     
-    console.log(`[Promotion] Applying promotion to option ${optionId} of product ${productId}`);
+    logger.info(`[Promotion] Applying promotion to option ${optionId} of product ${productId}`);
     
     const product = await applyPromotionToOption(productId, optionId, promotionData);
     
     if (!product) {
-      console.log(`[Promotion] Product or option not found: productId=${productId}, optionId=${optionId}`);
+      logger.warn(`[Promotion] Product or option not found: productId=${productId}, optionId=${optionId}`);
       return res.status(404).json({ message: 'Product or option not found' });
     }
     
-    console.log(`[Promotion] Successfully applied promotion to option ${optionId}`);
+    logger.info(`[Promotion] Successfully applied promotion to option ${optionId}`);
     
     res.json({ 
       message: 'Promotion applied to option successfully', 
       product 
     });
   } catch (error) {
-    console.error('Apply option promotion error:', error);
+    logger.error('Apply option promotion error:', error);
     res.status(400).json({ message: error.message });
   }
 });
@@ -110,14 +114,14 @@ router.post('/:productId/option/:optionId/promotion', async (req, res) => {
  * Remove promotion from product
  * DELETE /api/products/:productId/promotion
  */
-router.delete('/:productId/promotion', async (req, res) => {
+router.delete('/:productId/promotion', protect, rateLimiter({ windowSec: 60, maxRequests: 10, keyPrefix: 'remove-product-promotion' }), verifyOwnership, async (req, res) => {
   try {
     const { productId } = req.params;
     
     // Validate productId
     validateObjectId(productId, 'productId');
     
-    console.log(`[Promotion] Removing promotion from product ${productId}`);
+    logger.info(`[Promotion] Removing promotion from product ${productId}`);
     
     const product = await removePromotionFromProduct(productId);
     
@@ -125,14 +129,14 @@ router.delete('/:productId/promotion', async (req, res) => {
       return res.status(404).json({ message: 'Product not found' });
     }
     
-    console.log(`[Promotion] Successfully removed promotion from product ${productId}`);
+    logger.info(`[Promotion] Successfully removed promotion from product ${productId}`);
     
     res.json({ 
       message: 'Promotion removed successfully', 
       product 
     });
   } catch (error) {
-    console.error('Remove promotion error:', error);
+    logger.error('Remove promotion error:', error);
     res.status(500).json({ message: error.message });
   }
 });
@@ -141,7 +145,7 @@ router.delete('/:productId/promotion', async (req, res) => {
  * Remove promotion from product option
  * DELETE /api/products/:productId/option/:optionId/promotion
  */
-router.delete('/:productId/option/:optionId/promotion', async (req, res) => {
+router.delete('/:productId/option/:optionId/promotion', protect, rateLimiter({ windowSec: 60, maxRequests: 10, keyPrefix: 'remove-option-promotion' }), verifyOwnership, async (req, res) => {
   try {
     const { productId, optionId } = req.params;
     
@@ -149,23 +153,23 @@ router.delete('/:productId/option/:optionId/promotion', async (req, res) => {
     validateObjectId(productId, 'productId');
     validateObjectId(optionId, 'optionId');
     
-    console.log(`[Promotion] Removing promotion from option ${optionId} of product ${productId}`);
+    logger.info(`[Promotion] Removing promotion from option ${optionId} of product ${productId}`);
     
     const product = await removePromotionFromOption(productId, optionId);
     
     if (!product) {
-      console.log(`[Promotion] Product or option not found: productId=${productId}, optionId=${optionId}`);
+      logger.warn(`[Promotion] Product or option not found: productId=${productId}, optionId=${optionId}`);
       return res.status(404).json({ message: 'Product or option not found' });
     }
     
-    console.log(`[Promotion] Successfully removed promotion from option ${optionId}`);
+    logger.info(`[Promotion] Successfully removed promotion from option ${optionId}`);
     
     res.json({ 
       message: 'Promotion removed from option successfully', 
       product 
     });
   } catch (error) {
-    console.error('Remove option promotion error:', error);
+    logger.error('Remove option promotion error:', error);
     res.status(500).json({ message: error.message });
   }
 });
@@ -178,18 +182,18 @@ router.get('/vendor/:vendorId/promotions', async (req, res) => {
   try {
     const { vendorId } = req.params;
     
-    console.log(`[Promotion Routes] GET /vendor/${vendorId}/promotions`);
+      logger.info(`[Promotion Routes] GET /vendor/${vendorId}/promotions`);
     
     const promotions = await getActivePromotionsByVendor(vendorId);
     
-    console.log(`[Promotion Routes] Returning ${promotions.length} promotions`);
+    logger.info(`[Promotion Routes] Returning ${promotions.length} promotions`);
     
     res.json({ 
       promotions,
       count: promotions.length
     });
   } catch (error) {
-    console.error('Get vendor promotions error:', error);
+    logger.error('Get vendor promotions error:', error);
     res.status(500).json({ message: error.message });
   }
 });
@@ -207,7 +211,7 @@ router.get('/:productId/promotion/status', async (req, res) => {
     const status = await getPromotionStatus(productId);
     res.json(status);
   } catch (error) {
-    console.error('Get promotion status error:', error);
+    logger.error('Get promotion status error:', error);
     res.status(500).json({ message: error.message });
   }
 });
@@ -221,7 +225,7 @@ router.get('/:productId/option/:optionId/promotion/status', async (req, res) => 
     const status = await getPromotionStatus(productId, optionId);
     res.json(status);
   } catch (error) {
-    console.error('Get option promotion status error:', error);
+    logger.error('Get option promotion status error:', error);
     res.status(500).json({ message: error.message });
   }
 });

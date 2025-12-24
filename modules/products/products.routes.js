@@ -3,11 +3,24 @@ const router = express.Router();
 const productController = require("./products.controller");
 const { protect } = require("../../auth/auth.controller.js");
 const rateLimiter = require("../../utils/rateLimiter");
+const { verifyOwnership, verifyProductAccess } = require("./product-utils/products.auth.js");
+const {
+  validate,
+  validateQuery,
+  createProductSchema,
+  updateProductSchema,
+  addOptionSchema,
+  updateOptionSchema,
+  stockAdjustmentSchema,
+  searchQuerySchema,
+  paginationSchema
+} = require("./product-utils/productValidation.js");
 
 // ===================== HIGH-RISK ROUTES (Strict Limit: 5 requests/min per user) =====================
 router.post(
   "/",
   protect,
+  validate(createProductSchema),
   rateLimiter({ windowSec: 60, maxRequests: 5, keyPrefix: "create-product" }),
   productController.createProductController
 );
@@ -15,7 +28,9 @@ router.post(
 router.put(
   "/:id",
   protect,
+  validate(updateProductSchema),
   rateLimiter({ windowSec: 60, maxRequests: 5, keyPrefix: "update-product" }),
+  verifyOwnership,
   productController.updateProductController
 );
 
@@ -23,34 +38,43 @@ router.delete(
   "/:id",
   protect,
   rateLimiter({ windowSec: 60, maxRequests: 5, keyPrefix: "delete-product" }),
+  verifyOwnership,
   productController.deleteProductController
 );
 
 router.patch(
   "/:productId/options/:optionId",
   protect,
+  validate(updateOptionSchema),
   rateLimiter({ windowSec: 60, maxRequests: 5, keyPrefix: "update-option" }),
+  verifyOwnership,
   productController.updateProductOptionController
 );
 
 router.patch(
   "/:productId/:optionId/stock",
   protect,
+  validate(stockAdjustmentSchema),
   rateLimiter({ windowSec: 60, maxRequests: 5, keyPrefix: "adjust-stock" }),
+  verifyOwnership,
   productController.adjustProductStockController
 );
 
 router.patch(
   "/:productId/stock",
   protect,
+  validate(stockAdjustmentSchema),
   rateLimiter({ windowSec: 60, maxRequests: 5, keyPrefix: "add-stock" }),
+  verifyOwnership,
   productController.addProductStockMainController
 );
 
 router.post(
   "/:productId/options",
   protect,
+  validate(addOptionSchema),
   rateLimiter({ windowSec: 60, maxRequests: 5, keyPrefix: "add-option" }),
+  verifyOwnership,
   productController.addOptionController
 );
 
@@ -58,6 +82,7 @@ router.delete(
   "/:productId/options/:variantId",
   protect,
   rateLimiter({ windowSec: 60, maxRequests: 5, keyPrefix: "delete-variant" }),
+  verifyOwnership,
   productController.deleteProductVariantController
 );
 
@@ -96,6 +121,7 @@ router.get(
 
 router.get(
   "/search",
+  validateQuery(searchQuerySchema),
   rateLimiter({ windowSec: 60, maxRequests: 100, keyPrefix: "search-products" }),
   productController.searchProductsController
 );
@@ -109,6 +135,7 @@ router.get(
 router.get(
   "/:id",
   rateLimiter({ windowSec: 60, maxRequests: 100, keyPrefix: "get-product" }),
+  verifyProductAccess,
   productController.getProductByIdController
 );
 

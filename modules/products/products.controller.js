@@ -17,10 +17,11 @@ const {
   addSingleOption,
   addProductStockMain
 } = require("./products.service.js");
+const logger = require("../../utils/logger");
 
 module.exports = {
   // CREATE
-  async createProductController(req, res) {
+  async createProductController(req, res, next) {
     try {
       const { id } = req.user;
       const newProduct = await createProductService({
@@ -29,11 +30,11 @@ module.exports = {
       });
       res.status(201).json(newProduct);
     } catch (error) {
-      res.status(400).json({ error: error.message });
+      next(error);
     }
   },
   // READ ALL (with cache + limit)	
-  async getProductsController(req, res) {
+  async getProductsController(req, res, next) {
     try {
       const limit = Math.min(parseInt(req.query.limit) || 20, 100); // limit hard-capped at 100
       const skip = Math.max(parseInt(req.query.skip) || 0, 0);
@@ -42,40 +43,39 @@ module.exports = {
 
       res.json(products);
     } catch (error) {
-      console.error(error);
-      res.status(500).json({ error: error.message });
+      next(error);
     }
   },
 
   // GET /products/:id/related
-  async getRelatedProductsController(req, res) {
+  async getRelatedProductsController(req, res, next) {
     try {
       const related = await getRelatedProducts(req.params.id);
       res.status(200).json(related);
     } catch (error) {
-      res.status(404).json({ message: error.message });
+      next(error);
     }
   },
 
-  async getVendorProductsController(req, res) {
+  async getVendorProductsController(req, res, next) {
     try {
-      const limit = req.query.limit;
-      const skip = req.query.skip | 0;
+      const limit = parseInt(req.query.limit) || 0;
+      const skip = Math.max(parseInt(req.query.skip) || 0, 0);
       const { id } = req.params;
 
       const vendorProducts = await getProductByVendor(id, limit, skip);
 
       res.status(200).json(vendorProducts);
     } catch (error) {
-      console.log(error);
+      next(error);
     }
   },
 
   // GET /products/vendor/:id/own - Get all vendor's own products (including pending/rejected)
-  async getVendorOwnProductsController(req, res) {
+  async getVendorOwnProductsController(req, res, next) {
     try {
-      const limit = req.query.limit;
-      const skip = req.query.skip | 0;
+      const limit = parseInt(req.query.limit) || 0;
+      const skip = Math.max(parseInt(req.query.skip) || 0, 0);
       const { id } = req.params;
 
       // Verify the requesting user is the vendor
@@ -87,13 +87,12 @@ module.exports = {
 
       res.status(200).json(vendorProducts);
     } catch (error) {
-      console.log(error);
-      res.status(500).json({ message: error.message });
+      next(error);
     }
   },
 
   // GET /products/category/:category?limit=10&skip=10&fresh=true
-  async getByCategoryController(req, res) {
+  async getByCategoryController(req, res, next) {
     try {
       const { category } = req.params;
       const limit = parseInt(req.query.limit) || 0;
@@ -106,11 +105,11 @@ module.exports = {
       );
       res.json(products);
     } catch (error) {
-      res.status(500).json({ error: error.message });
+      next(error);
     }
   },
   // GET /products/category/:municipality?limit=10&skip=10&fresh=true
-  async getByMunicipalityController(req, res) {
+  async getByMunicipalityController(req, res, next) {
     try {
       const { municipality } = req.params;
       const limit = parseInt(req.query.limit) || 0;
@@ -125,11 +124,11 @@ module.exports = {
       );
       res.json(products);
     } catch (error) {
-      res.status(500).json({ error: error.message });
+      next(error);
     }
   },
   // GET /products/search?query=piaya&limit=10&skip=0&fresh=
-  async searchProductsController(req, res) {
+  async searchProductsController(req, res, next) {
     try {
       const { q, limit, skip } = req.query;
 
@@ -140,22 +139,22 @@ module.exports = {
       const products = await searchProductsService(q, limit, skip);
       res.json(products);
     } catch (error) {
-      res.status(500).json({ error: error.message });
+      next(error);
     }
   },
   // READ ONE (with cache)2
-  async getProductByIdController(req, res) {
+  async getProductByIdController(req, res, next) {
     const { id } = req.params;
     try {
       const product = await getProductByIdService(id);
-      if (!product) return res.json({ message: "Product not found!" });
+      if (!product) return res.status(404).json({ message: "Product not found!" });
       res.json(product);
     } catch (error) {
-      res.status(500).json({ error: error.message });
+      next(error);
     }
   },
   // UPDATE
-  async updateProductController(req, res) {
+  async updateProductController(req, res, next) {
     try {
       const { id } = req.params;
       const updatedProduct = await updateProductService(id, req.body);
@@ -166,11 +165,11 @@ module.exports = {
 
       res.json(updatedProduct);
     } catch (error) {
-      res.status(400).json({ error: error.message });
+      next(error);
     }
   },
 
-  async updateProductOptionController(req, res) {
+  async updateProductOptionController(req, res, next) {
     const { productId, optionId } = req.params;
     const updateData = req.body;
 
@@ -190,12 +189,11 @@ module.exports = {
         product: updated,
       });
     } catch (err) {
-      console.error("Update option error:", err);
-      res.status(500).json({ message: "Internal Server Error" });
+      next(err);
     }
   },
   // DELETE
-  async deleteProductController(req, res) {
+  async deleteProductController(req, res, next) {
     try {
       const { id } = req.params;
       const result = await deleteProductService(id);
@@ -206,11 +204,11 @@ module.exports = {
 
       res.json({ message: "Product deleted" });
     } catch (error) {
-      res.status(500).json({ error: error.message });
+      next(error);
     }
   },
 
-  async deleteProductVariantController(req, res) {
+  async deleteProductVariantController(req, res, next) {
     const { productId, variantId } = req.params;
 
     try {
@@ -227,9 +225,7 @@ module.exports = {
         product: updatedProduct,
       });
     } catch (error) {
-      console.error("Error deleting variant:", error);
-      const status = error?.status || 500;
-      res.status(status).json({ message: error.message || "Internal server error" });
+      next(error);
     }
   },
 
@@ -278,7 +274,7 @@ module.exports = {
         product: updated,
       });
     } catch (error) {
-      console.error(error);
+      logger.error(error);
       next(error);
     }
   },
@@ -291,10 +287,13 @@ module.exports = {
       const raw = delta ?? stock;
       const stockNum = Number(raw);
 
-      if (!productId || !stockNum) {
+      if (!productId || raw === undefined || raw === null) {
         return res.status(400).json({ error: "Missing productId or stock." });
       }
 
+      if (!Number.isFinite(stockNum) || Number.isNaN(stockNum)) {
+        return res.status(400).json({ error: "stock/delta must be a number." });
+      }
       const updated = await addProductStockMain(productId, 	stockNum);
       if (!updated) {
         return res.status(404).json({ error: "Product not found." });
@@ -305,7 +304,7 @@ module.exports = {
         product: updated,
       });
     } catch (error) {
-      console.log(error);
+      next(error);
     }
   },
 };

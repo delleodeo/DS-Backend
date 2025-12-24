@@ -1,6 +1,5 @@
 require("dotenv").config();
 const multer = require('multer');
-const { CloudinaryStorage } = require('multer-storage-cloudinary');
 const cloudinary = require('cloudinary').v2;
 
 cloudinary.config({
@@ -9,128 +8,58 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-/**
- * Storage configuration for temporary uploads
- * Tags images as temporary for cleanup
- */
-const tempStorage = new CloudinaryStorage({
-  cloudinary,
-  params: async (req, file) => {
-    const sessionId = req.headers['x-session-id'] || `session_${Date.now()}`;
-    return {
-      folder: 'DoroShop-Images/temp',
-      format: 'webp',
-      transformation: [{ width: 1200, height: 1200, crop: 'limit', quality: 'auto:good' }],
-      tags: ['temp', sessionId],
-      context: `temp=true|session=${sessionId}|created=${Date.now()}`,
-    };
-  },
-});
+// Use memory storage for multer and stream uploads to Cloudinary
+const memoryStorage = multer.memoryStorage();
 
 /**
- * Storage configuration for seller application documents
- * Accepts images (PNG/JPG) and PDF files for all document types
+ * Helper to upload a buffer to Cloudinary via upload_stream
+ * @param {Buffer} buffer
+ * @param {Object} options - cloudinary upload options (folder, resource_type, format, tags, transformation, public_id, context)
  */
-const documentStorage = new CloudinaryStorage({
-  cloudinary,
-  params: async (req, file) => {
-    const userId = req.user?.id || req.user?._id;
-    const timestamp = Date.now();
-    const isPdf = file.mimetype === 'application/pdf';
-    
-    // Base config for all documents
-    const config = {
-      folder: `DoroShop-Documents/seller-applications/${userId}`,
-      tags: ['seller-application', userId ? `user-${userId}` : 'temp'],
-      context: `temp=false|user=${userId}|type=seller-document|created=${timestamp}`,
-      public_id: `${file.fieldname}_${timestamp}`,
-      access_mode: 'public',
-    };
-    
-    if (isPdf) {
-      // PDF files - use 'raw' resource type, no transformations
-      return {
-        ...config,
-        resource_type: 'raw',
-        // Don't set format for PDFs - keep original
-      };
-    } else {
-      // Image files - optimize and convert to webp
-      return {
-        ...config,
-        resource_type: 'image',
-        format: 'webp',
-        transformation: [{ width: 1200, height: 1200, crop: 'limit', quality: 'auto:good' }],
-      };
-    }
-  },
-});
+function uploadBufferToCloudinary(buffer, options = {}) {
+  return new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(options, (error, result) => {
+      if (error) return reject(error);
+      resolve(result);
+    });
+    stream.end(buffer);
+  });
+}
 
+// Multer instances using memoryStorage
 const uploadDocuments = multer({
-  storage: documentStorage,
+  storage: memoryStorage,
   limits: { 
     files: 3, // Max 3 files (gov ID, BIR, DTI/SEC)
     fileSize: 10 * 1024 * 1024 // 10MB limit per file
   },
   fileFilter: (req, file, cb) => {
-    // Accept PNG, JPG images and PDF files for seller documents
     const allowedMimeTypes = [
       'image/jpeg', 
       'image/jpg', 
       'image/png',
       'application/pdf'
     ];
-    
-    if (allowedMimeTypes.includes(file.mimetype)) {
-      cb(null, true);
-    } else {
-      cb(new Error('Only PNG, JPG images and PDF files are allowed for seller documents'), false);
-    }
+    if (allowedMimeTypes.includes(file.mimetype)) cb(null, true);
+    else cb(new Error('Only PNG, JPG images and PDF files are allowed for seller documents'), false);
   }
 });
 
-/**
- * Storage configuration for permanent uploads
- */
-const permanentStorage = new CloudinaryStorage({
-  cloudinary,
-  params: async (req, file) => ({
-    folder: 'DoroShop-Images/products',
-    format: 'webp', 
-    transformation: [{ width: 1200, height: 1200, crop: 'limit', quality: 'auto:good' }],
-    tags: ['permanent', 'product'],
-    context: 'temp=false',
-  }),
-});
-
 const uploadTemp = multer({
-  storage: tempStorage,
-  limits: { 
-    files: 10,
-    fileSize: 100 * 1024 * 1024 // 100MB limit
-  },
+  storage: memoryStorage,
+  limits: { files: 10, fileSize: 100 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    // Accept only images
-    if (file.mimetype.startsWith('image/')) {
-      cb(null, true);
-    } else {
-      cb(new Error('Only image files are allowed'), false);
-    }
+    if (file.mimetype.startsWith('image/')) cb(null, true);
+    else cb(new Error('Only image files are allowed'), false);
   }
 });
 
 const uploadPermanent = multer({
-  storage: permanentStorage,
-  limits: { 
-    files: 10,
-    fileSize: 100 * 1024 * 1024
-  },
+  storage: memoryStorage,
+  limits: { files: 10, fileSize: 100 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith('image/')) {
-      cb(null, true);
-    } else {
-      cb(new Error('Only image files are allowed'), false);
-    }
+    if (file.mimetype.startsWith('image/')) cb(null, true);
+    else cb(new Error('Only image files are allowed'), false);
   }
 });
 
@@ -209,7 +138,6 @@ async function safeDeleteBatch(publicIds) {
     }
 
     const result = await deleteBatchFromCloudinary(publicIds).catch((err) => {
-      // Log and return a failure result rather than throwing
       console.error('[Safe Cloudinary Delete] Underlying delete error:', err.message);
       return { successful: 0, failed: publicIds.length, total: publicIds.length, successfulIds: [], failedDetails: publicIds.map(id => ({ publicId: id, reason: 'error', error: err.message })) };
     });
@@ -220,6 +148,87 @@ async function safeDeleteBatch(publicIds) {
     return { successful: 0, failed: publicIds.length || 0, total: publicIds.length || 0, successfulIds: [], failedDetails: publicIds.map(id => ({ publicId: id, reason: 'error', error: err.message })) };
   }
 }
+
+/**
+ * Middleware: Upload files (req.file or req.files) to Cloudinary using memory buffers
+ * type: 'temp'|'permanent'|'document'
+ */
+function makeUploadHandler(type = 'temp') {
+  return async function (req, res, next) {
+    try {
+      const sessionId = req.headers['x-session-id'] || `session_${Date.now()}`;
+
+      const uploadOne = async (file) => {
+        const isPdf = file.mimetype === 'application/pdf';
+        const timestamp = Date.now();
+        const baseOptions = {};
+
+        if (type === 'temp') {
+          baseOptions.folder = 'DoroShop-Images/temp';
+          baseOptions.format = 'webp';
+          baseOptions.transformation = [{ width: 1200, height: 1200, crop: 'limit', quality: 'auto:good' }];
+          baseOptions.tags = ['temp', sessionId];
+          baseOptions.context = `temp=true|session=${sessionId}|created=${timestamp}`;
+        } else if (type === 'permanent') {
+          baseOptions.folder = 'DoroShop-Images/products';
+          baseOptions.format = 'webp';
+          baseOptions.transformation = [{ width: 1200, height: 1200, crop: 'limit', quality: 'auto:good' }];
+          baseOptions.tags = ['permanent', 'product'];
+          baseOptions.context = 'temp=false';
+        } else if (type === 'document') {
+          const userId = req.user?.id || req.user?._id || 'anon';
+          baseOptions.folder = `DoroShop-Documents/seller-applications/${userId}`;
+          baseOptions.tags = ['seller-application', userId ? `user-${userId}` : 'temp'];
+          baseOptions.context = `temp=false|user=${userId}|type=seller-document|created=${timestamp}`;
+          baseOptions.public_id = `${file.fieldname}_${timestamp}`;
+          if (isPdf) baseOptions.resource_type = 'raw';
+        }
+
+        // Allow tests to spy/mock the exported upload function by resolving at runtime from module.exports
+        const uploader = (module.exports && module.exports.uploadBufferToCloudinary) ? module.exports.uploadBufferToCloudinary : uploadBufferToCloudinary;
+        const result = await uploader(file.buffer, baseOptions);
+        // Attach expected properties to file object for downstream code compatibility
+        file.path = result.secure_url || result.url;
+        file.filename = result.public_id;
+        file.width = result.width;
+        file.height = result.height;
+        file.format = result.format;
+        file.bytes = result.bytes || file.size;
+        return file;
+      };
+
+      if (req.file && req.file.buffer) {
+        await uploadOne(req.file);
+      }
+
+      if (req.files && Array.isArray(req.files)) {
+        for (let i = 0; i < req.files.length; i++) {
+          if (req.files[i] && req.files[i].buffer) {
+            await uploadOne(req.files[i]);
+          }
+        }
+      }
+
+      if (req.files && typeof req.files === 'object' && !Array.isArray(req.files)) {
+        // multer.fields result: req.files is object with arrays
+        for (const key of Object.keys(req.files)) {
+          for (let i = 0; i < req.files[key].length; i++) {
+            const f = req.files[key][i];
+            if (f && f.buffer) await uploadOne(f);
+          }
+        }
+      }
+
+      next();
+    } catch (err) {
+      next(err);
+    }
+  };
+}
+
+const tempUploadHandler = makeUploadHandler('temp');
+const permanentUploadHandler = makeUploadHandler('permanent');
+const documentUploadHandler = makeUploadHandler('document');
 
 /**
  * Mark temporary image as permanent
@@ -373,6 +382,9 @@ module.exports = {
   uploadTemp,
   uploadPermanent,
   uploadDocuments,
+  tempUploadHandler,
+  permanentUploadHandler,
+  documentUploadHandler,
   deleteFromCloudinary,
   deleteBatchFromCloudinary,
   safeDeleteBatch,
@@ -381,5 +393,6 @@ module.exports = {
   extractPublicIdFromUrl,
   generateSignedUrl,
   getDocumentViewUrl,
-  cloudinary
+  cloudinary,
+  uploadBufferToCloudinary // exported for unit testing if needed
 };

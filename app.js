@@ -7,6 +7,26 @@ const passport = require("./modules/users/passport");
 const cookieParser = require("cookie-parser");
 const { createSession } = require("./auth/session");
 const rateLimiter = require("./utils/rateLimiter");
+const logger = require("./utils/logger");
+const { errorHandler } = require("./utils/errorHandler");
+const helmet = require("helmet");
+
+// Security headers
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+      fontSrc: ["'self'", "https://fonts.gstatic.com"],
+      imgSrc: ["'self'", "data:", "https:", "http:"],
+      scriptSrc: ["'self'"],
+      connectSrc: ["'self'"],
+      objectSrc: ["'none'"],
+      upgradeInsecureRequests: [],
+    },
+  },
+  crossOriginEmbedderPolicy: false
+}));
 
 // middleware
 app.use(express.json({ limit: '50mb' }));
@@ -38,5 +58,8 @@ app.use(morgan("dev"));
 app.use(express.static('public'));
 
 app.use("/v1", routes);
+
+// Centralized error handler - ensures consistent error responses
+app.use(errorHandler);
 
 module.exports = app;

@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const sanitizeHtml = require('sanitize-html');
 
 const PromotionSchema = new mongoose.Schema(
 	{
@@ -83,6 +84,62 @@ const ProductSchema = new mongoose.Schema({
 	createdAt: { type: Date, default: Date.now },
 	municipality: { type: String, required: true },
 	promotion: { type: PromotionSchema, default: () => ({}) },
+});
+
+// XSS Protection: Sanitize user-generated content before saving
+ProductSchema.pre('save', function(next) {
+  try {
+    // Sanitize product description
+    if (this.description && typeof this.description === 'string') {
+      this.description = sanitizeHtml(this.description, {
+        allowedTags: [], // No HTML tags allowed
+        allowedAttributes: {},
+        disallowedTagsMode: 'discard'
+      }).trim();
+    }
+
+    // Sanitize rejection reason (admin field)
+    if (this.rejectionReason && typeof this.rejectionReason === 'string') {
+      this.rejectionReason = sanitizeHtml(this.rejectionReason, {
+        allowedTags: [], // No HTML tags allowed
+        allowedAttributes: {},
+        disallowedTagsMode: 'discard'
+      }).trim();
+    }
+
+    // Sanitize disable reason (admin field)
+    if (this.disableReason && typeof this.disableReason === 'string') {
+      this.disableReason = sanitizeHtml(this.disableReason, {
+        allowedTags: [], // No HTML tags allowed
+        allowedAttributes: {},
+        disallowedTagsMode: 'discard'
+      }).trim();
+    }
+
+    next();
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Sanitize review comments when reviews are modified
+ProductSchema.pre('save', function(next) {
+  try {
+    if (this.reviews && Array.isArray(this.reviews)) {
+      this.reviews.forEach(review => {
+        if (review.comment && typeof review.comment === 'string') {
+          review.comment = sanitizeHtml(review.comment, {
+            allowedTags: [], // No HTML tags allowed
+            allowedAttributes: {},
+            disallowedTagsMode: 'discard'
+          }).trim();
+        }
+      });
+    }
+    next();
+  } catch (error) {
+    next(error);
+  }
 });
 
 // Indexes for efficient admin queries

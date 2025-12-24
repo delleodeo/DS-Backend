@@ -61,8 +61,12 @@ class CacheUtils {
       }
 
       if (batch.length > 0) {
-        await this.redisClient.del(...batch);
-        totalDeleted += batch.length;
+        // Ensure keys are strings to avoid Redis type errors
+        const sane = batch.filter(k => typeof k === 'string' && k.length > 0);
+        if (sane.length > 0) {
+          await this.redisClient.del(...sane);
+          totalDeleted += sane.length;
+        }
       }
 
       if (totalDeleted > 0) {
