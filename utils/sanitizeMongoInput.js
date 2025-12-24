@@ -8,8 +8,9 @@ function sanitizeMongoInput(input) {
 		return sanitizeHtml(input, {
 			allowedTags: [],
 			allowedAttributes: {},
-		}).trim();
+		}).trim()
 	}
+	
 
 	// Handle arrays
 	if (Array.isArray(input)) {
