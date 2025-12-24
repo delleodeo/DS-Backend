@@ -17,7 +17,7 @@ const {
   deleteBatchFromCloudinary,
   extractPublicIdFromUrl,
 } = require("../upload/upload.service.js");
-const TagBasedCacheService = require("./product-utils/tagBasedCache.js");
+const CacheUtils = require("./product-utils/cacheUtils.js");
 const {
   validateAndCleanPromotions,
   ensureMainImage,
@@ -29,31 +29,24 @@ const {
   buildMunicipalityQuery,
 } = require("./product-utils/productUtils.js");
 
-const cache = new TagBasedCacheService(redisClient);
+const cache = new CacheUtils(redisClient);
 const mongoose = require("mongoose");
 const logger = require("../../utils/logger");
+const sanitizeMongoInput = require("../../utils/sanitizeMongoInput");
 
-async function invalidateAllProductCaches(productId, vendorId = null, categories = [], municipality = null) {
-  const tags = ['products'];
-
-  if (productId) {
-    tags.push(`product:${productId}`);
-  }
-
+async function invalidateAllProductCaches(productId, vendorId = null) {
+  // Run deletes in parallel and don't fail the caller if cache errors occur
+  const ops = [cache.delete(`products:${productId}`)];
   if (vendorId) {
-    tags.push(`vendor:${vendorId}`);
+    ops.push(cache.delete(`product:vendor:${vendorId}:approved`));
+    ops.push(cache.delete(`product:vendor:${vendorId}:own:all`));
   }
-
-  if (categories && categories.length > 0) {
-    categories.forEach(category => tags.push(`category:${category}`));
-  }
-
-  if (municipality) {
-    tags.push(`municipality:${municipality}`);
-  }
+  ops.push(cache.deletePattern(`products:approved:category:*`));
+  ops.push(cache.deletePattern(`products:search:*`));
+  ops.push(cache.deletePattern(`products:municipality:*`));
 
   try {
-    await cache.invalidateByTags(tags);
+    await Promise.all(ops);
   } catch (err) {
     logger.warn('[invalidateAllProductCaches] Cache invalidation encountered an error:', err);
   }
@@ -67,17 +60,21 @@ const PRODUCT_STATUS = {
 };
 
 async function getPaginatedProducts(skip, limit) {
-  const { limit: limitNum, skip: skipNum } = sanitizePagination(limit, skip);
-  const cacheKey = cache.generateKey('products:approved', `skip:${skipNum}`, `limit:${limitNum}`);
+  skip = sanitizeMongoInput(skip);
+  limit = sanitizeMongoInput(limit);
 
-  let paginatedProducts = await cache.get(cacheKey);
+  const { limit: limitNum, skip: skipNum } = sanitizePagination(limit, skip);
+  const redisPageKey = `products:approved:skip:${skipNum}:limit:${limitNum}`;
+
+  let paginatedProducts = await cache.get(redisPageKey);
   if (paginatedProducts) {
-    logger.debug(`Redis cache hit: ${cacheKey}`);
+    logger.debug(`Redis cache hit: ${redisPageKey}`);
   } else {
     // Only return approved products for public listing (buyers)
     paginatedProducts = await Product.find({
       status: PRODUCT_STATUS.APPROVED,
       isDisabled: { $ne: true },
+      stock: { $gt: 0}
     })
       .sort({ createdAt: -1 })
       .skip(skipNum)
@@ -85,7 +82,7 @@ async function getPaginatedProducts(skip, limit) {
       .lean({ virtuals: true });
 
     if (cache.isAvailable()) {
-      await cache.set(cacheKey, paginatedProducts, 300, ['products', 'products:approved']);
+      await cache.set(redisPageKey, paginatedProducts, 120); // 2 min TTL
       logger.info(`Cached approved products page skip=${skipNum}, limit=${limitNum}`);
     }
   }
@@ -94,6 +91,8 @@ async function getPaginatedProducts(skip, limit) {
 }
 
 async function createProductService(data) {
+  data = sanitizeMongoInput(data);
+
   const session = await mongoose.startSession();
   session.startTransaction();
 
@@ -119,6 +118,8 @@ async function createProductService(data) {
 }
 
 async function getProductsByCategoryService(category, limit, skip) {
+  category = sanitizeMongoInput(category);
+
   const { limit: limitNum, skip: skipNum } = sanitizePagination(limit, skip);
 
   if (typeof category !== 'string' || category.trim().length === 0) {
@@ -144,7 +145,7 @@ async function getProductsByCategoryService(category, limit, skip) {
   };
 
   const categoryQuery = buildCategoryQuery(normalizeCategory);
-  const query = { ...baseQuery, ...categoryQuery };
+  const query = { ...baseQuery, ...categoryQuery, stock: { $gt: 0 } };
 
   paginated = await Product.find(query)
     .sort({ createdAt: -1 })
@@ -153,7 +154,7 @@ async function getProductsByCategoryService(category, limit, skip) {
     .lean({ virtuals: true });
 
   if (cache.isAvailable()) {
-    await cache.set(cacheKey, paginated, 3600); // 1 hour TTL
+    await cache.set(cacheKey, paginated, 180); // 6 minutes TTL
   }
 
   return paginated;
@@ -161,6 +162,9 @@ async function getProductsByCategoryService(category, limit, skip) {
 
 // get product by municipality
 async function getProductByMunicipality(municipality, category, limit, skip) {
+  municipality = sanitizeMongoInput(municipality);
+  category = sanitizeMongoInput(category);
+
   const { limit: limitNum, skip: skipNum } = sanitizePagination(limit, skip);
   if (typeof municipality !== 'string' || typeof category !== 'string') {
     throw createError('Invalid municipality or category', 400);
@@ -186,11 +190,11 @@ async function getProductByMunicipality(municipality, category, limit, skip) {
   let query = { ...baseQuery };
 
   if (normalizeMunicipality !== "all") {
-    query = { ...query, ...buildMunicipalityQuery(normalizeMunicipality) };
+    query = { ...query, ...buildMunicipalityQuery(normalizeMunicipality), stock: { $gt: 0 } };
   }
 
   if (normalizeCategory !== "all") {
-    query = { ...query, ...buildCategoryQuery(normalizeCategory) };
+    query = { ...query, ...buildCategoryQuery(normalizeCategory), stock: { $gt: 0 } };
   }
 
   if (normalizeMunicipality === "all" && normalizeCategory === "all") {
@@ -209,7 +213,7 @@ async function getProductByMunicipality(municipality, category, limit, skip) {
   }
 
   if (cache.isAvailable()) {
-    await cache.set(cacheKey, paginated, 300); // 5 min TTL
+    await cache.set(cacheKey, paginated, 120); // 2 min TTL
   }
 
   return paginated;
@@ -217,6 +221,8 @@ async function getProductByMunicipality(municipality, category, limit, skip) {
 
 // related products
 async function getRelatedProducts(productId, limit = 6) {
+  productId = sanitizeMongoInput(productId);
+
   if (!isValidObjectId(productId)) {
     throw createError('Invalid product ID', 400);
   }
@@ -230,54 +236,24 @@ async function getRelatedProducts(productId, limit = 6) {
 
   if (categories.length === 0) return [];
 
-  // Limit to top 3 categories for better performance and relevance
-  const topCategories = categories.slice(0, 3);
-
-  // Use aggregation pipeline for score-based ranking
-  const related = await Product.aggregate([
-    {
-      $match: {
-        _id: { $ne: mongoose.Types.ObjectId(productId) },
-        stock: { $gt: 0 },
-        status: PRODUCT_STATUS.APPROVED,
-        isDisabled: { $ne: true },
-        categories: { $in: topCategories }
-      }
-    },
-    {
-      // Calculate relevance score based on category matches and other factors
-      $addFields: {
-        relevanceScore: {
-          $add: [
-            // Base score for category match
-            { $size: { $setIntersection: ['$categories', topCategories] } },
-            // Boost for higher ratings
-            { $multiply: ['$averageRating', 0.5] },
-            // Boost for more sales
-            { $multiply: [{ $log10: { $add: ['$sold', 1] } }, 0.3] },
-            // Boost for higher stock (availability)
-            { $multiply: [{ $log10: { $add: ['$stock', 1] } }, 0.2] }
-          ]
-        }
-      }
-    },
-    {
-      $sort: {
-        relevanceScore: -1, // Highest relevance first
-        averageRating: -1,  // Then by rating
-        sold: -1,           // Then by sales
-        createdAt: -1       // Finally by recency
-      }
-    },
-    {
-      $limit: limit
-    }
-  ]);
+  // ✅ Find products that share at least ONE category (only approved products)
+  const related = await Product.find({
+    _id: { $ne: productId },
+    stock: { $gt: 0 },
+    status: PRODUCT_STATUS.APPROVED,
+    isDisabled: { $ne: true },
+    categories: { $in: categories }, // <-- Matches if ANY category overlaps
+  })
+    .sort({ updatedAt: -1 }) // newest first
+    .limit(limit)
+    .lean({ virtuals: true });
 
   return related;
 }
 
 async function searchProductsService(query, limit = 0, skip = 0) {
+  query = sanitizeMongoInput(query);
+
   if (typeof query !== 'string' || query.trim().length === 0) {
     throw createError('Search query must be a non-empty string', 400);
   }
@@ -305,7 +281,7 @@ async function searchProductsService(query, limit = 0, skip = 0) {
   // Prefer MongoDB text search for performance if supported; fallback to regex search
   try {
     const textQuery = { $text: { $search: query } };
-    paginated = await Product.find({ ...baseQuery, ...textQuery }, { score: { $meta: "textScore" } })
+    paginated = await Product.find({ ...baseQuery, ...textQuery, stock: { $gt: 0 }  }, { score: { $meta: "textScore" }})
       .sort({ score: { $meta: "textScore" }, createdAt: -1 })
       .skip(skipNum)
       .limit(limitNum > 0 ? limitNum : 0)
@@ -330,6 +306,8 @@ async function searchProductsService(query, limit = 0, skip = 0) {
 }
 
 async function getProductByVendor(vendorId, limit = 15, skip = 0) {
+  vendorId = sanitizeMongoInput(vendorId);
+
   if (!isValidObjectId(vendorId)) {
     throw createError("Invalid vendor ID", 400);
   }
@@ -347,7 +325,8 @@ async function getProductByVendor(vendorId, limit = 15, skip = 0) {
   const vendorProducts = await Product.find({
     vendorId,
     status: PRODUCT_STATUS.APPROVED,
-    isDisabled: { $ne: true },
+    stock: { $gt: 0 },
+    isDisabled: { $ne: true }
   })
     .sort({ createdAt: -1 })
     .skip(skipNum)
@@ -364,9 +343,9 @@ async function getProductByVendor(vendorId, limit = 15, skip = 0) {
 }
 
 // Get ALL vendor's own products including pending/rejected (for vendor dashboard)
-async function getVendorOwnProducts(vendorId, limit = 100, skip = 0) {
-  const limitNum = parseInt(limit) || 100;
-  const skipNum = parseInt(skip) || 0;
+async function getVendorOwnProducts(vendorId) {
+  vendorId = sanitizeMongoInput(vendorId);
+
   const cacheKey = `product:vendor:${vendorId}:own:all`;
 
   const cached = await cache.get(cacheKey);
@@ -388,6 +367,8 @@ async function getVendorOwnProducts(vendorId, limit = 100, skip = 0) {
 }
 
 async function getProductByIdService(id) {
+  id = sanitizeMongoInput(id);
+
   if (!isValidObjectId(id)) {
     throw createError("Invalid product ID", 400);
   }
@@ -432,12 +413,15 @@ async function getProductByIdService(id) {
 }
 
 async function updateProductService(id, data) {
+  id = sanitizeMongoInput(id);
+  data = sanitizeMongoInput(data);
+
   if (!isValidObjectId(id)) {
     throw createError("Invalid product ID", 400);
   }
 
-  const PRODUCT_BY_ID_KEY = `products:${id}`;
-  await cache.delete(PRODUCT_BY_ID_KEY);
+  const cacheKey = `products:${id}`;
+  await cache.delete(cacheKey);
 
   let updatedProduct = await Product.findByIdAndUpdate(id, data, {
     new: true,
@@ -466,6 +450,10 @@ async function updateProductService(id, data) {
 }
 
 async function updateProductOptionService(productId, optionId, updateData) {
+  productId = sanitizeMongoInput(productId);
+  optionId = sanitizeMongoInput(optionId);
+  updateData = sanitizeMongoInput(updateData);
+
   if (!isValidObjectId(productId)) {
     throw createError("Invalid product ID", 400);
   }
@@ -498,6 +486,10 @@ async function updateProductOptionService(productId, optionId, updateData) {
 }
 
 async function addProductStock(productId, optionId, addition) {
+  productId = sanitizeMongoInput(productId);
+  if (optionId) optionId = sanitizeMongoInput(optionId);
+  addition = sanitizeMongoInput(addition);
+
   if (!isValidObjectId(productId)) {
     throw createError("Invalid product ID", 400);
   }
@@ -509,8 +501,9 @@ async function addProductStock(productId, optionId, addition) {
     throw createError("Addition value must be a number", 400);
   }
 
-  // If optionId is provided, update the stock inside that option atomically
+  // If optionId is provided, handle option stock
   if (optionId) {
+    // Proceed with atomic update
     const updated = await Product.findOneAndUpdate(
       { _id: productId, "option._id": optionId, "option.stock": { $gte: -addition } },
       { $inc: { "option.$.stock": addition } },
@@ -525,7 +518,8 @@ async function addProductStock(productId, optionId, addition) {
     return updated;
   }
 
-  // No optionId: update main product stock atomically
+  // No optionId: handle main product stock
+  // Proceed with atomic update
   const updated = await Product.findOneAndUpdate(
     { _id: productId, stock: { $gte: -addition } },
     { $inc: { stock: addition } },
@@ -541,6 +535,9 @@ async function addProductStock(productId, optionId, addition) {
 }
 
 async function addProductStockMain(productId, addition) {
+  productId = sanitizeMongoInput(productId);
+  addition = sanitizeMongoInput(addition);
+
   if (!isValidObjectId(productId)) {
     throw createError("Invalid product ID", 400);
   }
@@ -566,6 +563,8 @@ async function addProductStockMain(productId, addition) {
 }
 
 async function deleteProductService(id) {
+  id = sanitizeMongoInput(id);
+
   if (!isValidObjectId(id)) {
     throw createError("Invalid product ID", 400);
   }
@@ -642,6 +641,9 @@ async function deleteProductService(id) {
  * Returns: { deleted: boolean, product?: mongooseDoc, removedVariantImageUrl?: string, publicIdsToCleanup?: string[], vendorId }
  */
 async function removeVariantData(productId, variantId) {
+  productId = sanitizeMongoInput(productId);
+  variantId = sanitizeMongoInput(variantId);
+
   if (!isValidObjectId(productId)) {
     throw createError("Invalid product ID", 400);
   }
@@ -741,6 +743,12 @@ async function cleanupVariantImages(publicIds) {
  * Public removeVariant - orchestrates the smaller helpers
  */
 async function removeVariant(productId, variantId) {
+  productId = sanitizeMongoInput(productId);
+  variantId = sanitizeMongoInput(variantId);
+
+  if(!isValidObjectId(productId) && !isValidObjectId(variantId)) {
+    throw createError("Invalid product ID", 400);
+  }
   // 1) Remove data
   const dataResult = await removeVariantData(productId, variantId);
 
@@ -784,6 +792,8 @@ async function removeVariant(productId, variantId) {
 }
 
 async function getProductOrThrow(productId) {
+  productId = sanitizeMongoInput(productId);
+
   const product = await Product.findById(productId);
   if (!product) {
     throw createError("Product not found", 404);
@@ -792,6 +802,9 @@ async function getProductOrThrow(productId) {
 } 
 
 async function addSingleOption(productId, optionData) {
+  productId = sanitizeMongoInput(productId);
+  optionData = sanitizeMongoInput(optionData);
+
   if (!isValidObjectId(productId)) {
     throw createError("Invalid product ID", 400);
   }

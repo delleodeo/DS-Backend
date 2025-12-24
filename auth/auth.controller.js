@@ -26,6 +26,33 @@ exports.protect = async (req, res, next) => {
   }
 };
 
+exports.optionalProtect = async (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader?.startsWith("Bearer ")) {
+    req.user = null;
+    return next();
+  }
+
+  try {
+    const token = authHeader.split(" ")[1];
+    
+    // Check if token is blacklisted
+    const isBlacklisted = await TokenBlacklist.isTokenBlacklisted(token);
+    if (isBlacklisted) {
+      req.user = null;
+      return next();
+    }
+    
+    const decoded = verifyToken(token);
+    req.user = decoded;
+    req.token = token; // Store token for potential logout
+    next();
+  } catch (err) {
+    req.user = null;
+    next();
+  }
+};
+
 exports.restrictTo = (...roles) => {
   return (req, res, next) => {
     if (!roles.includes(req.user.role)) {

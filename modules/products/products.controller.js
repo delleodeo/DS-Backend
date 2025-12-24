@@ -74,16 +74,14 @@ module.exports = {
   // GET /products/vendor/:id/own - Get all vendor's own products (including pending/rejected)
   async getVendorOwnProductsController(req, res, next) {
     try {
-      const limit = parseInt(req.query.limit) || 0;
-      const skip = Math.max(parseInt(req.query.skip) || 0, 0);
+
       const { id } = req.params;
 
-      // Verify the requesting user is the vendor
       if (req.user.id !== id) {
         return res.status(403).json({ message: 'Access denied. You can only view your own products.' });
       }
 
-      const vendorProducts = await getVendorOwnProducts(id, limit, skip);
+      const vendorProducts = await getVendorOwnProducts(id);
 
       res.status(200).json(vendorProducts);
     } catch (error) {

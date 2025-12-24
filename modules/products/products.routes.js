@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const productController = require("./products.controller");
-const { protect } = require("../../auth/auth.controller.js");
+const { protect, optionalProtect } = require("../../auth/auth.controller.js");
 const rateLimiter = require("../../utils/rateLimiter");
 const { verifyOwnership, verifyProductAccess } = require("./product-utils/products.auth.js");
 const {
@@ -135,6 +135,7 @@ router.get(
 router.get(
   "/:id",
   rateLimiter({ windowSec: 60, maxRequests: 100, keyPrefix: "get-product" }),
+  optionalProtect,
   verifyProductAccess,
   productController.getProductByIdController
 );
