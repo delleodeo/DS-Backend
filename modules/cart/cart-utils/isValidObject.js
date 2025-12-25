@@ -1,3 +1,5 @@
+const mongoose = require('mongoose');
+
 /**
  * Validate ObjectId
  * @param {string} id - ID to validate

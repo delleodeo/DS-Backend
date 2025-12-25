@@ -14,6 +14,8 @@ const mongoose = require('mongoose');
 jest.mock('../modules/cart/cart.model');
 jest.mock('../modules/products/products.model');
 jest.mock('../utils/logger');
+jest.mock('../utils/monitoringService');
+jest.mock('../utils/transaction');
 jest.mock('../config/redis', () => ({
   getRedisClient: jest.fn(() => ({
     get: jest.fn(),
@@ -28,7 +30,8 @@ jest.mock('../modules/products/product-utils/cacheUtils.js', () => {
     get: jest.fn(),
     set: jest.fn(),
     delete: jest.fn(),
-    deletePattern: jest.fn()
+    deletePattern: jest.fn(),
+    isAvailable: jest.fn().mockReturnValue(true)
   }));
 });
 

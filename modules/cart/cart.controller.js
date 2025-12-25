@@ -12,7 +12,11 @@ exports.addToCart = async (req, res) => {
     const { item } = req.body;
     const { id } = req.user;
     const cart = await addToCartService(id, item);
-    res.json(cart);
+    res.json({
+      success: true,
+      data: cart,
+      message: "Item added to cart successfully"
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -21,9 +25,12 @@ exports.addToCart = async (req, res) => {
 exports.getCart = async (req, res) => {
   try {
     const { id } = req.user;
-    console.log(id);
     const cart = await getCartService(id);
-    res.json(cart);
+    res.json({
+      success: true,
+      data: cart,
+      message: "Cart retrieved successfully"
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -34,7 +41,11 @@ exports.updateCartItem = async (req, res) => {
     const { item } = req.body;
     const { id } = req.user;
     const cart = await updateCartItemService(id, item);
-    res.json(cart);
+    res.json({
+      success: true,
+      data: cart,
+      message: "Cart item updated successfully"
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -45,7 +56,11 @@ exports.removeCartItem = async (req, res) => {
     const { productId, optionId } = req.body;
     const { id } = req.user;
     const cart = await removeCartItemService(id, productId, optionId);
-    res.json(cart);
+    res.json({
+      success: true,
+      data: cart,
+      message: "Item removed from cart successfully"
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -55,7 +70,11 @@ exports.clearCart = async (req, res) => {
   try {
     const { id } = req.user;
     const cart = await clearCartService(id);
-    res.json(cart);
+    res.json({
+      success: true,
+      data: cart,
+      message: "Cart cleared successfully"
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

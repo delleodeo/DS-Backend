@@ -18,6 +18,45 @@ try {
 const CacheUtils = require("../products/product-utils/cacheUtils.js");
 const cache = new CacheUtils(redisClient);
 
+// Cart configuration constants
+const CART_CONFIG = {
+  MAX_QUANTITY: parseInt(process.env.CART_MAX_QUANTITY) || 50,
+  DEFAULT_SHIPPING_FEE: parseInt(process.env.CART_SHIPPING_FEE) || 50,
+};
+
+/**
+ * Simple retry utility for cache operations
+ */
+const retryCacheOperation = async (operation, maxRetries = 3) => {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (attempt === maxRetries) throw error;
+      logger.warn(`Cache operation failed, retrying (${attempt}/${maxRetries}):`, error.message);
+      await new Promise(resolve => setTimeout(resolve, 100 * attempt)); // Exponential backoff
+    }
+  }
+};
+
+/**
+ * Validate item input
+ */
+const validateItem = (item) => {
+  if (!item || typeof item !== 'object') {
+    throw new AppError("Invalid item data", ERROR_TYPES.VALIDATION_ERROR, HTTP_STATUS.BAD_REQUEST);
+  }
+  if (!item.productId || !require('mongoose').Types.ObjectId.isValid(item.productId)) {
+    throw new AppError("Invalid productId", ERROR_TYPES.VALIDATION_ERROR, HTTP_STATUS.BAD_REQUEST);
+  }
+  if (item.optionId && !require('mongoose').Types.ObjectId.isValid(item.optionId)) {
+    throw new AppError("Invalid optionId", ERROR_TYPES.VALIDATION_ERROR, HTTP_STATUS.BAD_REQUEST);
+  }
+  if (!item.quantity || typeof item.quantity !== 'number' || item.quantity < 1 || item.quantity > CART_CONFIG.MAX_QUANTITY) {
+    throw new AppError(`Quantity must be a number between 1 and ${CART_CONFIG.MAX_QUANTITY}`, ERROR_TYPES.VALIDATION_ERROR, HTTP_STATUS.BAD_REQUEST);
+  }
+};
+
 /**
  * Validate ObjectId format
  */
@@ -77,6 +116,32 @@ const getAvailableStock = async (productId, optionId) => {
 };
 
 /**
+ * Validate stock for item addition/update
+ */
+const validateStockForItem = async (productId, optionId, requestedQuantity, existingQuantity = 0) => {
+  const availableStock = await getAvailableStock(productId, optionId);
+  const totalQuantity = existingQuantity + requestedQuantity;
+  if (totalQuantity > availableStock) {
+    throw new AppError(
+      `Only ${availableStock} items available in stock. You already have ${existingQuantity} in cart.`,
+      ERROR_TYPES.CONFLICT_ERROR,
+      HTTP_STATUS.CONFLICT
+    );
+  }
+};
+
+/**
+ * Find existing item in cart items array
+ */
+const findExistingItem = (items, productId, optionId) => {
+  return items.find(
+    (i) =>
+      i.productId.equals(productId) &&
+      (i.optionId ? String(i.optionId) : '') === (optionId ? String(optionId) : '')
+  );
+};
+
+/**
  * Add item to cart with transaction safety
  */
 exports.addToCartService = async (userId, item) => {
@@ -85,68 +150,17 @@ exports.addToCartService = async (userId, item) => {
   try {
     // Validate inputs
     validateObjectId(userId, 'userId');
-    if (!item || typeof item !== 'object') {
-      throw new AppError("Invalid item data", ERROR_TYPES.VALIDATION_ERROR, HTTP_STATUS.BAD_REQUEST);
-    }
+    validateItem(item);
 
     // Sanitize input
     const sanitizedItem = sanitizeMongoInput(item);
 
-    // Check stock before adding
-    const availableStock = await getAvailableStock(sanitizedItem.productId, sanitizedItem.optionId);
-
     const result = await withTransaction(async (session) => {
-      let cart = await Cart.findOne({ userId }).session(session);
-      let existingQuantity = 0;
-
-      if (cart) {
-        const existingItem = cart.items.find(
-          (i) =>
-            i.productId.equals(sanitizedItem.productId) &&
-            (i.optionId ? String(i.optionId) : '') === (sanitizedItem.optionId ? String(sanitizedItem.optionId) : '')
-        );
-        if (existingItem) {
-          existingQuantity = existingItem.quantity;
-        }
-      }
-
-      const totalQuantity = existingQuantity + sanitizedItem.quantity;
-
-      if (totalQuantity > availableStock) {
-        throw new AppError(
-          `Only ${availableStock} items available in stock. You already have ${existingQuantity} in cart.`,
-          ERROR_TYPES.CONFLICT_ERROR,
-          HTTP_STATUS.CONFLICT
-        );
-      }
-
-      if (!cart) {
-        cart = new Cart({
-          userId,
-          items: [sanitizedItem]
-        });
-      } else {
-        const existingItem = cart.items.find(
-          (i) =>
-            i.productId.equals(sanitizedItem.productId) &&
-            (i.optionId ? String(i.optionId) : '') === (sanitizedItem.optionId ? String(sanitizedItem.optionId) : '')
-        );
-
-        if (existingItem) {
-          existingItem.quantity += sanitizedItem.quantity;
-        } else {
-          cart.items.push(sanitizedItem);
-        }
-      }
-
-      cart.updatedAt = new Date();
-      await cart.save({ session });
-
-      return cart;
+      return await addItemToCart(session, userId, sanitizedItem);
     });
 
-    // Cache the result
-    await cache.set(getCacheKey(userId), result);
+    // Cache the result with retry
+    await retryCacheOperation(() => cache.set(getCacheKey(userId), result));
 
     // Record performance metrics
     monitoring.recordResponseTime(Date.now() - startTime);
@@ -170,6 +184,44 @@ exports.addToCartService = async (userId, item) => {
 };
 
 /**
+ * Helper function to add item within transaction
+ */
+const addItemToCart = async (session, userId, sanitizedItem) => {
+  let cart = await Cart.findOne({ userId }).session(session);
+  let existingQuantity = 0;
+
+  if (cart) {
+    const existingItem = findExistingItem(cart.items, sanitizedItem.productId, sanitizedItem.optionId);
+    if (existingItem) {
+      existingQuantity = existingItem.quantity;
+    }
+  }
+
+  // Validate stock
+  await validateStockForItem(sanitizedItem.productId, sanitizedItem.optionId, sanitizedItem.quantity, existingQuantity);
+
+  if (!cart) {
+    cart = new Cart({
+      userId,
+      items: [sanitizedItem]
+    });
+  } else {
+    const existingItem = findExistingItem(cart.items, sanitizedItem.productId, sanitizedItem.optionId);
+
+    if (existingItem) {
+      existingItem.quantity += sanitizedItem.quantity;
+    } else {
+      cart.items.push(sanitizedItem);
+    }
+  }
+
+  cart.updatedAt = new Date();
+  await cart.save({ session });
+
+  return cart;
+};
+
+/**
  * Get cart with caching
  */
 exports.getCartService = async (userId) => {
@@ -178,8 +230,8 @@ exports.getCartService = async (userId) => {
   try {
     validateObjectId(userId, 'userId');
 
-    // Try cache first
-    const cached = await cache.get(getCacheKey(userId));
+    // Try cache first with retry
+    const cached = await retryCacheOperation(() => cache.get(getCacheKey(userId)));
     if (cached) {
       monitoring.recordCacheHit();
       return cached;
@@ -188,16 +240,16 @@ exports.getCartService = async (userId) => {
     monitoring.recordCacheMiss();
 
     // Fetch from database
-    const cart = await Cart.findOne({ userId }).lean();
+    const cart = await Cart.findOne({ userId });
 
     // Record database query time
     monitoring.recordDatabaseQuery(Date.now() - startTime);
 
-    const result = cart ? { ...cart, items: cart.items || [] } : { userId, items: [] };
+    const result = cart ? { ...cart.toObject(), items: cart.items || [] } : { userId, items: [] };
 
-    // Cache the result
+    // Cache the result with retry
     if (cart) {
-      await cache.set(getCacheKey(userId), result);
+      await retryCacheOperation(() => cache.set(getCacheKey(userId), result));
     }
 
     // Record performance metrics
@@ -222,68 +274,16 @@ exports.updateCartItemService = async (userId, item) => {
 
   try {
     validateObjectId(userId, 'userId');
-    if (!item || typeof item !== 'object') {
-      throw new AppError("Invalid item data", ERROR_TYPES.VALIDATION_ERROR, HTTP_STATUS.BAD_REQUEST);
-    }
+    validateItem(item);
 
     const sanitizedItem = sanitizeMongoInput(item);
 
     const result = await withTransaction(async (session) => {
-      const cart = await Cart.findOne({ userId }).session(session);
-      if (!cart) {
-        throw new AppError("Cart not found", ERROR_TYPES.NOT_FOUND_ERROR, HTTP_STATUS.NOT_FOUND);
-      }
-
-      const existingItem = cart.items.find(
-        (i) =>
-          i.productId.equals(sanitizedItem.productId) &&
-          (i.optionId ? String(i.optionId) : '') === (sanitizedItem.optionId ? String(sanitizedItem.optionId) : '')
-      );
-
-      if (existingItem) {
-        const newQuantity = existingItem.quantity + sanitizedItem.quantity;
-
-        // Check stock before updating
-        const availableStock = await getAvailableStock(sanitizedItem.productId, sanitizedItem.optionId);
-
-        if (newQuantity > availableStock) {
-          throw new AppError(
-            `Only ${availableStock} items available in stock.`,
-            ERROR_TYPES.CONFLICT_ERROR,
-            HTTP_STATUS.CONFLICT
-          );
-        }
-
-        if (newQuantity < 1) {
-          throw new AppError(
-            "Quantity cannot be less than 1",
-            ERROR_TYPES.VALIDATION_ERROR,
-            HTTP_STATUS.BAD_REQUEST
-          );
-        }
-
-        existingItem.quantity = newQuantity;
-      } else {
-        // Adding new item - check stock
-        const availableStock = await getAvailableStock(sanitizedItem.productId, sanitizedItem.optionId);
-        if (sanitizedItem.quantity > availableStock) {
-          throw new AppError(
-            `Only ${availableStock} items available in stock.`,
-            ERROR_TYPES.CONFLICT_ERROR,
-            HTTP_STATUS.CONFLICT
-          );
-        }
-        cart.items.push(sanitizedItem);
-      }
-
-      cart.updatedAt = new Date();
-      await cart.save({ session });
-
-      return cart;
+      return await updateItemInCart(session, userId, sanitizedItem);
     });
 
-    // Update cache
-    await cache.set(getCacheKey(userId), result);
+    // Update cache with retry
+    await retryCacheOperation(() => cache.set(getCacheKey(userId), result));
 
     // Record performance metrics
     monitoring.recordResponseTime(Date.now() - startTime);
@@ -303,6 +303,33 @@ exports.updateCartItemService = async (userId, item) => {
     });
     throw error;
   }
+};
+
+/**
+ * Helper function to update item within transaction
+ */
+const updateItemInCart = async (session, userId, sanitizedItem) => {
+  const cart = await Cart.findOne({ userId }).session(session);
+  if (!cart) {
+    throw new AppError("Cart not found", ERROR_TYPES.NOT_FOUND_ERROR, HTTP_STATUS.NOT_FOUND);
+  }
+
+  const existingItem = findExistingItem(cart.items, sanitizedItem.productId, sanitizedItem.optionId);
+
+  if (existingItem) {
+    // Validate stock for the new quantity
+    await validateStockForItem(sanitizedItem.productId, sanitizedItem.optionId, sanitizedItem.quantity);
+    existingItem.quantity = sanitizedItem.quantity;
+  } else {
+    // Adding new item - check stock
+    await validateStockForItem(sanitizedItem.productId, sanitizedItem.optionId, sanitizedItem.quantity);
+    cart.items.push(sanitizedItem);
+  }
+
+  cart.updatedAt = new Date();
+  await cart.save({ session });
+
+  return cart;
 };
 
 /**
@@ -340,8 +367,8 @@ exports.removeCartItemService = async (userId, productId, optionId) => {
       throw new AppError("Cart not found", ERROR_TYPES.NOT_FOUND_ERROR, HTTP_STATUS.NOT_FOUND);
     }
 
-    // Update cache
-    await cache.set(getCacheKey(userId), cart.toObject());
+    // Update cache with retry
+    await retryCacheOperation(() => cache.set(getCacheKey(userId), cart.toObject()));
 
     // Record performance metrics
     monitoring.recordResponseTime(Date.now() - startTime);
@@ -377,8 +404,8 @@ exports.clearCartService = async (userId) => {
       { new: true }
     );
 
-    // Update cache
-    await cache.set(getCacheKey(userId), cart);
+    // Update cache with retry
+    await retryCacheOperation(() => cache.set(getCacheKey(userId), cart));
 
     // Record performance metrics
     monitoring.recordResponseTime(Date.now() - startTime);
