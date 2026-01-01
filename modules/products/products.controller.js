@@ -39,7 +39,7 @@ module.exports = {
       const limit = Math.min(parseInt(req.query.limit) || 20, 100); // limit hard-capped at 100
       const skip = Math.max(parseInt(req.query.skip) || 0, 0);
 
-      const products = await getPaginatedProducts(skip, limit);
+      const products = await getPaginatedProducts(skip);
 
       res.json(products);
     } catch (error) {

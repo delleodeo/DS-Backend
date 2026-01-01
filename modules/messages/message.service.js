@@ -4,6 +4,11 @@ const User = require("../users/users.model");
 const Vendor = require("../vendors/vendors.model");
 const Product = require("../products/products.model");
 
+const { ValidationError, AuthorizationError, NotFoundError } = require("../../utils/errorHandler");
+const sanitizeMongoInput = require("../../utils/sanitizeMongoInput");
+const { getRedisClient, isRedisAvailable, safeDel } = require("../../config/redis");
+
+
 // GET OR CREATE CONVERSATION
 exports.getOrCreateConversationService = async (customerId, vendorId, contextType = "general", contextId = null) => {
 	try {
@@ -11,12 +16,11 @@ exports.getOrCreateConversationService = async (customerId, vendorId, contextTyp
 
 		// Prevent users from messaging themselves
 		if (customerId.toString() === vendorId.toString()) {
-			throw new Error("You cannot create a conversation with yourself");
+			throw new ValidationError("You cannot create a conversation with yourself");
 		}
 
 		// Check if conversation already exists
 		let conversation = await Conversation.findOne({ customerId, vendorId });
-
 		if (conversation) {
 			console.log(`✅ [MESSAGE] Conversation found: ${conversation._id}`);
 			return conversation.toObject();
@@ -27,11 +31,11 @@ exports.getOrCreateConversationService = async (customerId, vendorId, contextTyp
 		const vendor = await User.findById(vendorId);
 
 		if (!customer) {
-			throw new Error("Customer not found");
+			throw new NotFoundError("Customer not found");
 		}
 
 		if (!vendor) {
-			throw new Error("Vendor not found");
+			throw new NotFoundError("Vendor not found");
 		}
 
 		// Create new conversation
@@ -55,14 +59,16 @@ exports.getOrCreateConversationService = async (customerId, vendorId, contextTyp
 // SEND MESSAGE
 exports.sendMessageService = async (messageData) => {
 	try {
-		const { conversationId, senderId, senderType, content, messageType, imageUrl, referenceId, referenceType } = messageData;
+		// Sanitize input to prevent NoSQL injection & XSS
+		const data = sanitizeMongoInput(messageData);
+		const { conversationId, senderId, senderType: clientSenderType, content, messageType, imageUrl, referenceId, referenceType } = data;
 
 		console.log(`💬 [MESSAGE] Sending message in conversation ${conversationId}`);
 
 		// Verify conversation exists
 		const conversation = await Conversation.findById(conversationId);
 		if (!conversation) {
-			throw new Error("Conversation not found");
+			throw new NotFoundError("Conversation not found");
 		}
 
 		// Verify sender is part of the conversation
@@ -70,28 +76,39 @@ exports.sendMessageService = async (messageData) => {
 		const isVendor = conversation.vendorId.toString() === senderId.toString();
 
 		if (!isCustomer && !isVendor) {
-			throw new Error("You are not part of this conversation");
+			throw new AuthorizationError("You are not part of this conversation");
 		}
 
-		// Determine actual sender type based on conversation role
+		// Determine actual sender type based on conversation role (ignore client-supplied senderType)
 		let actualSenderType;
 		if (isCustomer && !isVendor) {
 			actualSenderType = "customer";
 		} else if (isVendor && !isCustomer) {
 			actualSenderType = "vendor";
-		} else if (isCustomer && isVendor) {
-			// If user is both (shouldn't happen due to validation above), use provided senderType
-			actualSenderType = senderType;
+		} else {
+			// If user is both (unlikely), fall back to client value or default
+			actualSenderType = clientSenderType || "customer";
 		}
 
 		console.log(`📝 [MESSAGE] Sender type: ${actualSenderType} (isCustomer: ${isCustomer}, isVendor: ${isVendor})`);
 
-		// Create message
+		// Sanitize content and enforce length caps
+		const sanitizedContent = typeof content === "string" ? sanitizeMongoInput(content).substring(0, 2000) : content;
+
+		// Validate referenced resources when necessary
+		if (messageType === "product" && referenceId) {
+			const product = await Product.findById(referenceId);
+			if (!product) {
+				throw new ValidationError("Referenced product not found");
+			}
+		}
+
+		// Create message (trust server-derived senderType)
 		const message = new Message({
 			conversationId,
 			senderId,
 			senderType: actualSenderType,
-			content,
+			content: sanitizedContent,
 			messageType: messageType || "text",
 			imageUrl,
 			referenceId,
@@ -100,23 +117,41 @@ exports.sendMessageService = async (messageData) => {
 
 		await message.save();
 
-		// Update conversation with last message and unread count
-		conversation.lastMessage = {
-			content: content.substring(0, 100), // Preview only
-			senderId,
-			senderType: actualSenderType,
-			createdAt: message.createdAt
-		};
+		// Prepare lastMessage preview
+		const preview = sanitizedContent ? sanitizedContent.substring(0, 100) : "";
 
-		// Increment unread count for recipient
-		if (actualSenderType === "customer") {
-			conversation.unreadCountVendor += 1;
-		} else {
-			conversation.unreadCountCustomer += 1;
+		// Atomically update conversation: lastMessage + unread counter + updatedAt
+		const incObj = actualSenderType === "customer" ? { unreadCountVendor: 1 } : { unreadCountCustomer: 1 };
+
+		await Conversation.updateOne(
+			{ _id: conversation._id },
+			{
+				$set: {
+					lastMessage: {
+						content: preview,
+						senderId,
+						senderType: actualSenderType,
+						createdAt: message.createdAt
+					},
+					updatedAt: new Date()
+				},
+				$inc: incObj
+			}
+		);
+
+		// Update cached total (if Redis available)
+		if (isRedisAvailable()) {
+			try {
+				const rclient = getRedisClient();
+				const key = `conversation:${conversation._id}:message_count`;
+				await rclient.incr(key);
+				// Ensure TTL to avoid unbounded keys
+				await rclient.expire(key, 3600);
+			} catch (err) {
+				console.warn('Redis incr message count failed:', err.message);
+			}
 		}
 
-		conversation.updatedAt = new Date();
-		await conversation.save();
 
 		// Populate sender info
 		const populatedMessage = await Message.findById(message._id)
@@ -135,12 +170,14 @@ exports.sendMessageService = async (messageData) => {
 // GET CONVERSATION MESSAGES
 exports.getConversationMessagesService = async (conversationId, userId, page = 1, limit = 50) => {
 	try {
+		page = Math.max(1, Number(page) || 1);
+		limit = Math.min(100, Math.max(1, Number(limit) || 50)); // cap to 100
 		const skip = (page - 1) * limit;
 
 		// Verify user is part of conversation
 		const conversation = await Conversation.findById(conversationId);
 		if (!conversation) {
-			throw new Error("Conversation not found");
+			throw new NotFoundError("Conversation not found");
 		}
 
 		const isParticipant = 
@@ -148,10 +185,10 @@ exports.getConversationMessagesService = async (conversationId, userId, page = 1
 			conversation.vendorId.toString() === userId.toString();
 
 		if (!isParticipant) {
-			throw new Error("You are not part of this conversation");
+			throw new AuthorizationError("You are not part of this conversation");
 		}
 
-		// Get messages
+		// Get messages (most recent first)
 		const messages = await Message.find({ 
 			conversationId,
 			isDeleted: false
@@ -162,12 +199,29 @@ exports.getConversationMessagesService = async (conversationId, userId, page = 1
 			.limit(limit)
 			.lean();
 
-		const total = await Message.countDocuments({ 
-			conversationId,
-			isDeleted: false
-		});
+		let total;
+		const cacheKey = `conversation:${conversationId}:message_count`;
+		if (isRedisAvailable()) {
+			try {
+				const rclient = getRedisClient();
+				const cached = await rclient.get(cacheKey);
+				if (cached !== null) {
+					total = Number(cached);
+				} else {
+					total = await Message.countDocuments({ conversationId, isDeleted: false });
+					// cache for 60 seconds
+					await rclient.setEx(cacheKey, 60, String(total));
+				}
+			} catch (err) {
+				console.warn('Redis message count get/set failed:', err.message);
+				total = await Message.countDocuments({ conversationId, isDeleted: false });
+			}
+		} else {
+			total = await Message.countDocuments({ conversationId, isDeleted: false });
+		}
 
-		// Reverse to show oldest first
+
+		// Reverse to show oldest first in page
 		messages.reverse();
 
 		return {
@@ -186,6 +240,8 @@ exports.getConversationMessagesService = async (conversationId, userId, page = 1
 // GET USER CONVERSATIONS
 exports.getUserConversationsService = async (userId, userType = "customer", page = 1, limit = 20) => {
 	try {
+		page = Math.max(1, Number(page) || 1);
+		limit = Math.min(100, Math.max(1, Number(limit) || 20));
 		const skip = (page - 1) * limit;
 
 		const query = userType === "customer" 
@@ -220,7 +276,7 @@ exports.markMessagesAsReadService = async (conversationId, userId, userType) => 
 	try {
 		const conversation = await Conversation.findById(conversationId);
 		if (!conversation) {
-			throw new Error("Conversation not found");
+			throw new NotFoundError("Conversation not found");
 		}
 
 		// Verify user is part of conversation
@@ -228,11 +284,12 @@ exports.markMessagesAsReadService = async (conversationId, userId, userType) => 
 		const isVendor = conversation.vendorId.toString() === userId.toString();
 
 		if (!isCustomer && !isVendor) {
-			throw new Error("You are not part of this conversation");
+			throw new AuthorizationError("You are not part of this conversation");
 		}
 
-		// Mark unread messages as read
-		const senderTypeToMark = userType === "customer" ? "vendor" : "customer";
+		// Derive userType server-side and mark unread messages as read
+		const role = isCustomer ? "customer" : "vendor";
+		const senderTypeToMark = role === "customer" ? "vendor" : "customer";
 
 		const result = await Message.updateMany(
 			{
@@ -248,8 +305,8 @@ exports.markMessagesAsReadService = async (conversationId, userId, userType) => 
 			}
 		);
 
-		// Reset unread count
-		if (userType === "customer") {
+		// Reset unread count for this participant (derive server-side)
+		if (role === "customer") {
 			conversation.unreadCountCustomer = 0;
 		} else {
 			conversation.unreadCountVendor = 0;
@@ -274,17 +331,27 @@ exports.deleteMessageService = async (messageId, userId) => {
 	try {
 		const message = await Message.findById(messageId);
 		if (!message) {
-			throw new Error("Message not found");
+			throw new NotFoundError("Message not found");
 		}
 
 		// Only sender can delete
 		if (message.senderId.toString() !== userId.toString()) {
-			throw new Error("You can only delete your own messages");
+			throw new AuthorizationError("You can only delete your own messages");
 		}
 
 		message.isDeleted = true;
 		message.deletedAt = new Date();
 		await message.save();
+
+		// Invalidate cached message count for this conversation
+		try {
+			if (isRedisAvailable()) {
+				const key = `conversation:${message.conversationId.toString()}:message_count`;
+				await safeDel(key);
+			}
+		} catch (err) {
+			console.warn('Redis safeDel failed for message deletion cache:', err.message);
+		}
 
 		console.log(`✅ [MESSAGE] Message deleted: ${messageId}`);
 
@@ -328,22 +395,28 @@ exports.searchConversationsService = async (userId, userType, searchQuery) => {
 			? { customerId: userId, isActiveCustomer: true }
 			: { vendorId: userId, isActiveVendor: true };
 
-		// Get conversations with populated user data
+		// Sanitize and cap search query
+		const q = typeof searchQuery === "string" ? sanitizeMongoInput(searchQuery).substring(0, 200) : "";
+
+		if (!q) return [];
+
+		// Fetch a reasonable subset and filter server-side to avoid huge memory usage
 		const conversations = await Conversation.find(baseQuery)
 			.populate("customerId", "name imageUrl email")
 			.populate("vendorId", "name imageUrl email")
 			.sort({ updatedAt: -1 })
+			.limit(200)
 			.lean();
 
-		// Filter by search query (search in other participant's name or last message)
 		const filtered = conversations.filter(conv => {
 			const otherUser = isCustomer ? conv.vendorId : conv.customerId;
-			const nameMatch = otherUser.name.toLowerCase().includes(searchQuery.toLowerCase());
-			const messageMatch = conv.lastMessage?.content?.toLowerCase().includes(searchQuery.toLowerCase());
-			return nameMatch || messageMatch;
+			const nameMatch = otherUser?.name?.toLowerCase().includes(q.toLowerCase());
+			const messageMatch = conv.lastMessage?.content?.toLowerCase().includes(q.toLowerCase());
+			return Boolean(nameMatch) || Boolean(messageMatch);
 		});
 
-		return filtered;
+		// Return up to 50 results
+		return filtered.slice(0, 50);
 	} catch (error) {
 		console.error("❌ [MESSAGE] Error searching conversations:", error);
 		throw error;
@@ -355,7 +428,7 @@ exports.archiveConversationService = async (conversationId, userId, userType) =>
 	try {
 		const conversation = await Conversation.findById(conversationId);
 		if (!conversation) {
-			throw new Error("Conversation not found");
+			throw new NotFoundError("Conversation not found");
 		}
 
 		// Verify user is part of conversation
@@ -363,11 +436,11 @@ exports.archiveConversationService = async (conversationId, userId, userType) =>
 		const isVendor = conversation.vendorId.toString() === userId.toString();
 
 		if (!isCustomer && !isVendor) {
-			throw new Error("You are not part of this conversation");
+			throw new AuthorizationError("You are not part of this conversation");
 		}
 
-		// Archive for the user
-		if (userType === "customer") {
+		// Archive for the user (derive role server-side)
+		if (isCustomer) {
 			conversation.isArchivedByCustomer = true;
 		} else {
 			conversation.isArchivedByVendor = true;
@@ -389,7 +462,7 @@ exports.blockConversationService = async (conversationId, userId, userType) => {
 	try {
 		const conversation = await Conversation.findById(conversationId);
 		if (!conversation) {
-			throw new Error("Conversation not found");
+			throw new NotFoundError("Conversation not found");
 		}
 
 		// Verify user is part of conversation
@@ -397,11 +470,11 @@ exports.blockConversationService = async (conversationId, userId, userType) => {
 		const isVendor = conversation.vendorId.toString() === userId.toString();
 
 		if (!isCustomer && !isVendor) {
-			throw new Error("You are not part of this conversation");
+			throw new AuthorizationError("You are not part of this conversation");
 		}
 
-		// Block for the user
-		if (userType === "customer") {
+		// Block for the user (derive role server-side)
+		if (isCustomer) {
 			conversation.isBlockedByCustomer = true;
 		} else {
 			conversation.isBlockedByVendor = true;

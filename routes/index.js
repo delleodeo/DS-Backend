@@ -15,6 +15,7 @@ const reviewRoutes = require("../modules/reviews/review.routes");
 const messageRoutes = require("../modules/messages/message.routes");
 const socketTestRoutes = require("./socket-test");
 const sellerApplicationRoutes = require("./sellerApplication.routes");
+const paymentRoutes = require("../modules/payments/payments.routes");
 
 // Import Banner model for public banner endpoint
 const Banner = require("../modules/admin/models/banner.model");
@@ -105,5 +106,6 @@ router.use("/reviews", reviewRoutes);
 router.use("/messages", messageRoutes);
 router.use("/socket-test", socketTestRoutes);
 router.use("/api/seller", sellerApplicationRoutes);
+router.use("/payments", paymentRoutes);
 
 module.exports = router;

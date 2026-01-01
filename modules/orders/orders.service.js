@@ -8,6 +8,10 @@ const Admin = require("../admin/admin.model.js");
 const { emitAgreementMessage } = require("../../config/socket");
 const Product = require("../products/products.model");
 const Vendor = require("../vendors/vendors.model");
+const sanitizeMongoInput = require('../../utils/sanitizeMongoInput');
+const { ValidationError, NotFoundError, AuthorizationError, ConflictError, DatabaseError } = require('../../utils/errorHandler');
+const { validateId } = require('../../utils/validation');
+const mongoose = require('mongoose');
 
 const getUserOrdersKey = (userId) => `orders:user:${userId}`;
 const getVendorOrdersKey = (vendorId) => `orders:vendor:${vendorId}`;
@@ -114,6 +118,12 @@ const updateVendorRevenue = async (vendorId, orderAmount) => {
 // CREATE ORDER
 exports.createOrderService = async (orderData) => {
 	try {
+		orderData = sanitizeMongoInput(orderData);
+		// Ensure customerId exists and is valid
+		const customerId = orderData.customerId || orderData.userId;
+		if (!customerId) throw new ValidationError('Missing customerId');
+		validateId(String(customerId), 'customerId');
+
 		const order = new Order(orderData);
 		const savedOrder = await order.save();
 
@@ -124,23 +134,23 @@ exports.createOrderService = async (orderData) => {
 		if (isRedisAvailable()) {
 			try {
 				const { safeDel } = require('../../config/redis');
-				await safeDel(getUserOrdersKey(orderData.userId));
-				if (orderData.vendorId) {
-					await safeDel(getVendorOrdersKey(orderData.vendorId));
-				}
+await safeDel(getUserOrdersKey(orderData.userId || orderData.customerId || (savedOrder && savedOrder.customerId)));
+			if (orderData.vendorId || (savedOrder && savedOrder.vendorId)) {
+				await safeDel(getVendorOrdersKey(orderData.vendorId || (savedOrder && savedOrder.vendorId)));
+			}
 
-				// Each product in the order
-				if (Array.isArray(orderData.items)) {
-					for (const item of orderData.items) {
-						if (item.orderProductId) {
-							await safeDel(getProductOrdersKey(item.orderProductId));
-						}
+			// Each product in the order
+			if (Array.isArray(orderData.items)) {
+				for (const item of orderData.items) {
+					if (item.orderProductId) {
+						await safeDel(getProductOrdersKey(item.orderProductId));
 					}
 				}
+			}
 
-				// This specific order (if cached)
-				await safeDel(getOrderKey(savedOrder._id.toString()));
-				await safeDel(getUserOrdersKey(savedOrder.customerId.toString()));
+			// This specific order (if cached)
+			await safeDel(getOrderKey(savedOrder._id.toString()));
+			await safeDel(getUserOrdersKey((savedOrder && savedOrder.customerId) || orderData.userId || orderData.customerId));
 
 				// Optional: Admin dashboard/statistics cache
 				await safeDel("adminDashboardStats");
@@ -152,11 +162,13 @@ exports.createOrderService = async (orderData) => {
 		return savedOrder;
 	} catch (err) {
 		console.error("Error creating order:", err);
-		throw new Error("Failed to create order");
+		throw new DatabaseError(err.message || 'Failed to create order', 'createOrder');
 	}
 };
 // GET ORDERS BY USER
 exports.getOrdersByUserService = async (userId) => {
+	userId = sanitizeMongoInput(userId);
+	validateId(String(userId), 'userId');
 	const key = getUserOrdersKey(userId);
 	
 	if (isRedisAvailable()) {
@@ -176,6 +188,8 @@ exports.getOrdersByUserService = async (userId) => {
 
 // GET ORDERS BY VENDOR
 exports.getOrdersByVendorService = async (vendorId) => {
+	vendorId = sanitizeMongoInput(vendorId);
+	validateId(String(vendorId), 'vendorId');
 	const key = getVendorOrdersKey(vendorId);
 	
 	if (isRedisAvailable()) {
@@ -193,6 +207,8 @@ exports.getOrdersByVendorService = async (vendorId) => {
 
 // GET ORDERS BY PRODUCT
 exports.getOrdersByProductService = async (productId) => {
+	productId = sanitizeMongoInput(productId);
+	validateId(String(productId), 'productId');
 	const key = getProductOrdersKey(productId);
 	
 	if (isRedisAvailable()) {
@@ -212,6 +228,8 @@ exports.getOrdersByProductService = async (productId) => {
 
 // GET ORDER BY ID 
 exports.getOrderByIdService = async (orderId) => {
+	orderId = sanitizeMongoInput(orderId);
+	validateId(String(orderId), 'orderId');
 	const key = getOrderKey(orderId);
 	
 	if (isRedisAvailable()) {
@@ -228,6 +246,8 @@ exports.getOrderByIdService = async (orderId) => {
 
 // CANCEL ORDER (WITH CACHE INVALIDATION)
 exports.cancelOrderService = async (orderId) => {
+	orderId = sanitizeMongoInput(orderId);
+	validateId(String(orderId), 'orderId');
 	const updated = await Order.findByIdAndUpdate(
 		orderId,
 		{ status: "cancelled" },
@@ -242,7 +262,7 @@ exports.cancelOrderService = async (orderId) => {
 		const { safeDel } = require('../../config/redis');
 		await Promise.all([
 			redisClient.set(getOrderKey(orderId), JSON.stringify(updated)).catch(() => {}),
-			safeDel(getUserOrdersKey(updated.userId)),
+			safeDel(getUserOrdersKey(updated.userId || updated.customerId)),
 			safeDel(getVendorOrdersKey(updated.vendorId)),
 			...updated.items.map((item) => safeDel(getProductOrdersKey(item.orderProductId))),
 		]);
@@ -352,13 +372,17 @@ exports.updateOrderStatusService = async (
 	newStatus,
 	trackingNumber = null
 ) => {
+	orderId = sanitizeMongoInput(orderId);
+	newStatus = sanitizeMongoInput(newStatus);
+	trackingNumber = sanitizeMongoInput(trackingNumber);
+	validateId(String(orderId), 'orderId');
 	const order = await Order.findById(orderId);
 	if (!order) return null;
 
 	// Validate transition
 	const allowed = ALLOWED_TRANSITIONS[order.status] || [];
 	if (!allowed.includes(newStatus)) {
-		throw new Error(
+		throw new ConflictError(
 			`Cannot change order from '${order.status}' to '${newStatus}'.`
 		);
 	}
@@ -434,14 +458,22 @@ exports.addAgreementMessageService = async ({
 	console.log("message:", message);
 	console.log("role:", role);
 
+	// Sanitize inputs
+	orderId = sanitizeMongoInput(orderId);
+	userId = sanitizeMongoInput(userId);
+	message = sanitizeMongoInput(message);
+	role = sanitizeMongoInput(role);
+
 	if (!message || typeof message !== "string" || !message.trim()) {
-		throw new Error("Message content is required.");
+		throw new ValidationError("Message content is required.");
 	}
+
+	validateId(String(orderId), 'orderId');
 
 	const order = await Order.findById(orderId);
 
 	if (!order) {
-		throw new Error("Order not found.");
+		throw new NotFoundError('Order');
 	}
 
 	console.log("📋 Order found:", {
@@ -451,11 +483,11 @@ exports.addAgreementMessageService = async ({
 	});
 
 	// Ensure the user is either the customer or the vendor for this order
-	const isCustomer = order.customerId.toString() === userId;
-	const isVendor = order.vendorId.toString() === userId;
+	const isCustomer = order.customerId.toString() === String(userId);
+	const isVendor = order.vendorId.toString() === String(userId);
 
 	if (!isCustomer && !isVendor) {
-		throw new Error("You are not authorized to update this order.");
+		throw new AuthorizationError("You are not authorized to update this order.");
 	}
 
 	const newMessage = {
@@ -499,133 +531,4 @@ exports.addAgreementMessageService = async ({
 	return updatedOrder;
 };
 
-exports.createOrder = async (req, res) => {
-	const orderData = req.body;
 
-	try {
-		// Basic validation
-		if (!orderData.userId || !orderData.items || orderData.items.length === 0) {
-			return res.status(400).json({ message: "Invalid order data" });
-		}
-
-		// Create order
-		const savedOrder = await this.createOrderService(orderData);
-
-		return res.status(201).json(savedOrder);
-	} catch (error) {
-		console.error("Error creating order:", error);
-		return res.status(500).json({ message: "Internal server error" });
-	}
-};
-
-// GET ORDERS BY USER
-exports.getOrdersByUser = async (req, res) => {
-	const userId = req.params.userId;
-
-	try {
-		const orders = await this.getOrdersByUserService(userId);
-		return res.json(orders);
-	} catch (error) {
-		console.error("Error fetching orders by user:", error);
-		return res.status(500).json({ message: "Internal server error" });
-	}
-};
-
-// GET ORDERS BY VENDOR
-exports.getOrdersByVendor = async (req, res) => {
-	const vendorId = req.params.vendorId;
-
-	try {
-		const orders = await this.getOrdersByVendorService(vendorId);
-		return res.json(orders);
-	} catch (error) {
-		console.error("Error fetching orders by vendor:", error);
-		return res.status(500).json({ message: "Internal server error" });
-	}
-};
-
-// GET ORDERS BY PRODUCT
-exports.getOrdersByProduct = async (req, res) => {
-	const productId = req.params.productId;
-
-	try {
-		const orders = await this.getOrdersByProductService(productId);
-		return res.json(orders);
-	} catch (error) {
-		console.error("Error fetching orders by product:", error);
-		return res.status(500).json({ message: "Internal server error" });
-	}
-};
-
-// GET ORDER BY ID 
-exports.getOrderById = async (req, res) => {
-	const orderId = req.params.orderId;
-
-	try {
-		const order = await this.getOrderByIdService(orderId);
-		if (!order) {
-			return res.status(404).json({ message: "Order not found" });
-		}
-		return res.json(order);
-	} catch (error) {
-		console.error("Error fetching order by ID:", error);
-		return res.status(500).json({ message: "Internal server error" });
-	}
-};
-
-// CANCEL ORDER (WITH CACHE INVALIDATION)
-exports.cancelOrder = async (req, res) => {
-	const orderId = req.params.orderId;
-
-	try {
-		const updatedOrder = await this.cancelOrderService(orderId);
-		if (!updatedOrder) {
-			return res.status(404).json({ message: "Order not found" });
-		}
-		return res.json(updatedOrder);
-	} catch (error) {
-		console.error("Error cancelling order:", error);
-		return res.status(500).json({ message: "Internal server error" });
-	}
-};
-
-// UPDATE ORDER STATUS (WITH CACHE INVALIDATION)
-exports.updateOrderStatus = async (req, res) => {
-	const orderId = req.params.orderId;
-	const { newStatus, trackingNumber } = req.body;
-
-	try {
-		const updatedOrder = await this.updateOrderStatusService(
-			orderId,
-			newStatus,
-			trackingNumber
-		);
-		if (!updatedOrder) {
-			return res.status(404).json({ message: "Order not found" });
-		}
-		return res.json(updatedOrder);
-	} catch (error) {
-		console.error("Error updating order status:", error);
-		return res.status(500).json({ message: "Internal server error" });
-	}
-};
-
-// ADD AGREEMENT MESSAGE TO ORDER
-exports.addAgreementMessage = async (req, res) => {
-	const { orderId } = req.params;
-	const { message, role } = req.body;
-	const userId = req.user._id; // Assuming user ID is available in the request object
-
-	try {
-		const updatedOrder = await this.addAgreementMessageService({
-			orderId,
-			userId,
-			message,
-			role,
-		});
-		return res.json(updatedOrder);
-	} catch (error) {
-		console.error("Error adding agreement message:", error);
-		return res.status(500).json({ message: "Internal server error" });
-	}
-};

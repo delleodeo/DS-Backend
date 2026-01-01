@@ -9,128 +9,91 @@ const {
 	addAgreementMessageService,
 } = require("./orders.service");
 
-exports.addAgreementMessage = async (req, res) => {
-	try {
-		const { id: orderId } = req.params;
-		const { id: userId, role } = req.user;
-		const { message } = req.body;
+const sanitizeMongoInput = require('../../utils/sanitizeMongoInput');
+const { ValidationError, asyncHandler } = require('../../utils/errorHandler');
+const { validateId } = require('../../utils/validation');
 
-		console.log("🔍 Debug - Add Agreement Message:");
-		console.log("Order ID:", orderId);
-		console.log("User ID:", userId);
-		console.log("User Role:", role);
-		console.log("Message:", message);
-		console.log("Full req.user:", req.user);
+exports.addAgreementMessage = asyncHandler(async (req, res) => {
+	const { id: orderId } = req.params;
+	const { id: userId, role } = req.user;
+	let { message } = req.body;
 
-		// Map user role to sender type (enum values: "customer" or "vendor")
-		let senderType;
-		if (role === "vendor") {
-			senderType = "vendor";
-		} else {
-			// Default to customer for any other role (user, admin, etc.)
-			senderType = "customer";
-		}
+	// Basic input sanitization
+	message = sanitizeMongoInput(message);
+	validateId(String(orderId), 'orderId');
 
-		console.log("🔄 Mapped sender type:", senderType);
-
-		const updatedOrder = await addAgreementMessageService({
-			orderId,
-			userId,
-			message,
-			role: senderType, // Pass the mapped sender type
-		});
-
-		res.json(updatedOrder);
-	} catch (err) {
-		console.error("❌ Error in addAgreementMessage controller:", err);
-		console.error("Error stack:", err.stack);
-		
-		if (err.message === "Order not found.") {
-			return res.status(404).json({ error: err.message });
-		}
-		if (err.message === "You are not authorized to update this order.") {
-			return res.status(403).json({ error: err.message });
-		}
-		if (err.message === "Message content is required.") {
-			return res.status(400).json({ error: err.message });
-		}
-		res.status(500).json({ error: "Server error while adding message." });
+	if (!message || typeof message !== 'string' || !message.trim()) {
+		throw new ValidationError('Message content is required.');
 	}
-};
 
-exports.createOrder = async (req, res) => {
-	try {
-		const { id } = req.user;
-		const order = await createOrderService({ customerId: id, ...req.body });
-		res.status(201).json(order);
-	} catch (err) {
-		res.status(400).json({ error: err.message });
-	}
-};
+	// Map user role to sender type
+	const senderType = role === 'vendor' ? 'vendor' : 'customer';
 
-exports.getOrdersByUser = async (req, res) => {
-	try {
-		const { id } = req.user;
-    console.log(id)
-		const orders = await getOrdersByUserService(id);
-		res.json(orders);
-	} catch (err) {
-		res.status(500).json({ error: err.message });
-	}
-};
+	const updatedOrder = await addAgreementMessageService({
+		orderId,
+		userId,
+		message,
+		role: senderType,
+	});
 
-exports.getOrdersByVendor = async (req, res) => {
-	try {
-		const { id } = req.user;
-		const orders = await getOrdersByVendorService(id);
-		res.json(orders);
-	} catch (err) {
-		res.status(500).json({ error: err.message });
-	}
-};
+	res.json(updatedOrder);
+});
 
-exports.getOrdersByProduct = async (req, res) => {
-	try {
-		const { productId } = req.params;
-		const orders = await getOrdersByProductService(productId);
-		res.json(orders);
-	} catch (err) {
-		res.status(500).json({ error: err.message });
-	}
-};
+exports.createOrder = asyncHandler(async (req, res) => {
+	const { id } = req.user;
+	const payload = sanitizeMongoInput(req.body);
 
-exports.getOrderById = async (req, res) => {
-	try {
-		const { id } = req.params;
-		const order = await getOrderByIdService(id);
-		if (!order) return res.status(404).json({ message: "Order not found" });
-		res.json(order);
-	} catch (err) {
-		res.status(500).json({ error: err.message });
+	if (!payload || !payload.items || !Array.isArray(payload.items) || payload.items.length === 0) {
+		throw new ValidationError('Invalid order data');
 	}
-};
 
-exports.updateOrderStatus = async (req, res) => {
-	try {
-		const { orderId } = req.params;
-		const { status } = req.body;
-		console.log(orderId)
-		const order = await updateOrderStatusService(orderId, status);
-		if (!order) return res.status(404).json({ message: "Order not found" });
-		res.json(order);
-	} catch (err) {
-		res.status(400).json({ error: err.message });
-	}
-};
+	const order = await createOrderService({ customerId: id, ...payload });
+	res.status(201).json(order);
+});
 
-exports.cancelOrder = async (req, res) => {
-	try {
-		const { id } = req.params;
-		const order = await cancelOrderService(id);
-		if (!order) return res.status(404).json({ message: "Order not found" });
-		res.json(order);
-	} catch (err) {
-		res.status(400).json({ error: err.message });
-	}
-};
+exports.getOrdersByUser = asyncHandler(async (req, res) => {
+	const { id } = req.user;
+	validateId(String(id), 'userId');
+	const orders = await getOrdersByUserService(id);
+	res.json(orders);
+});
+
+exports.getOrdersByVendor = asyncHandler(async (req, res) => {
+	const { id } = req.user;
+	validateId(String(id), 'vendorId');
+	const orders = await getOrdersByVendorService(id);
+	res.json(orders);
+});
+
+exports.getOrdersByProduct = asyncHandler(async (req, res) => {
+	const { productId } = req.params;
+	validateId(String(productId), 'productId');
+	const orders = await getOrdersByProductService(productId);
+	res.json(orders);
+});
+
+exports.getOrderById = asyncHandler(async (req, res) => {
+	const { id } = req.params;
+	validateId(String(id), 'orderId');
+	const order = await getOrderByIdService(id);
+	if (!order) throw new ValidationError('Order not found');
+	res.json(order);
+});
+
+exports.updateOrderStatus = asyncHandler(async (req, res) => {
+	const { orderId } = req.params;
+	const { newStatus, trackingNumber } = req.body;
+	validateId(String(orderId), 'orderId');
+	const order = await updateOrderStatusService(orderId, newStatus, trackingNumber);
+	if (!order) throw new ValidationError('Order not found');
+	res.json(order);
+});
+
+exports.cancelOrder = asyncHandler(async (req, res) => {
+	const { id } = req.params;
+	validateId(String(id), 'orderId');
+	const order = await cancelOrderService(id);
+	if (!order) throw new ValidationError('Order not found');
+	res.json(order);
+});
 
