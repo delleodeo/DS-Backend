@@ -138,6 +138,18 @@ router.post(
   paymentController.cancelPayment
 );
 
+/**
+ * @route   GET /api/payments/:id/qr/download
+ * @desc    Download QR code for a payment
+ * @access  Private (User - own payments only, Vendor, Admin)
+ */
+router.get(
+  "/:id/qr/download",
+  restrictTo("user", "vendor", "admin"),
+  paymentValidator.validatePaymentId,
+  paymentController.downloadQRCode
+);
+
 // ========================================
 // ADMIN ROUTES (Order Recovery)
 // ========================================

@@ -1,6 +1,7 @@
 const paymentService = require("./payments.service");
 const { asyncHandler, ValidationError } = require("../../utils/errorHandler");
 const logger = require("../../utils/logger");
+const axios = require("axios");
 
 /**
  * Payment Controller
@@ -389,4 +390,146 @@ exports.getPendingOrderPayments = asyncHandler(async (req, res) => {
       createdAt: p.createdAt
     })),
   });
+});
+
+/**
+ * @route   GET /api/payments/:paymentId/qr/download
+ * @desc    Download QR code for a payment
+ * @access  Private (User - own payments only, Vendor, Admin)
+ */
+exports.downloadQRCode = asyncHandler(async (req, res) => {
+  const { id: paymentId } = req.params;
+  const userId = req.user.id;
+  const userRole = req.user.role;
+
+  try {
+    // Get payment details with ownership verification
+    const Payment = require("./payments.model");
+    const payment = await Payment.findById(paymentId);
+    
+    if (!payment) {
+      return res.status(404).json({
+        success: false,
+        message: "Payment not found"
+      });
+    }
+
+    // Check ownership (unless admin)
+    if (userRole !== 'admin' && payment.userId.toString() !== userId.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: "Access denied"
+      });
+    }
+
+    // Check if payment has QR code (QRPH payments only)
+    if (payment.metadata?.get('paymentMethod') !== 'qrph') {
+      return res.status(400).json({
+        success: false,
+        message: "QR code download is only available for QRPH payments"
+      });
+    }
+
+    // Check if payment is still valid for download (not expired or too old)
+    const paymentAge = Date.now() - new Date(payment.createdAt).getTime();
+    const maxAge = 24 * 60 * 60 * 1000; // 24 hours
+    
+    if (paymentAge > maxAge) {
+      return res.status(410).json({
+        success: false,
+        message: "QR code is no longer available for download (expired)"
+      });
+    }
+
+    // Get QR code URL from PayMongo or generate fallback
+    let qrCodeUrl;
+    
+    if (payment.gatewayResponse?.data?.attributes?.next_action?.code?.image_url) {
+      qrCodeUrl = payment.gatewayResponse.data.attributes.next_action.code.image_url;
+    } else {
+      // Fallback: generate QR code using the payment intent ID
+      qrCodeUrl = paymentService.generateQRCodeUrl(
+        payment.paymentIntentId,
+        payment.gatewayResponse?.data?.attributes?.client_key
+      );
+    }
+
+    if (!qrCodeUrl) {
+      return res.status(404).json({
+        success: false,
+        message: "QR code not available for this payment"
+      });
+    }
+
+    // Fetch QR code image
+    const response = await axios.get(qrCodeUrl, {
+      responseType: 'arraybuffer',
+      timeout: 10000,
+      headers: {
+        'User-Agent': 'DShop-QR-Downloader/1.0'
+      }
+    });
+
+    // Determine file extension from content type
+    const contentType = response.headers['content-type'] || 'image/png';
+    let fileExtension = '.png';
+    
+    if (contentType.includes('jpeg') || contentType.includes('jpg')) {
+      fileExtension = '.jpg';
+    } else if (contentType.includes('svg')) {
+      fileExtension = '.svg';
+    }
+
+    // Generate filename with payment info
+    const paymentDate = new Date(payment.createdAt).toISOString().split('T')[0];
+    const filename = `QRPH-Payment-${payment._id.toString().slice(-8)}-${paymentDate}${fileExtension}`;
+
+    // Set download headers
+    res.set({
+      'Content-Type': contentType,
+      'Content-Disposition': `attachment; filename="${filename}"`,
+      'Content-Length': response.data.length,
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+      'Pragma': 'no-cache',
+      'Expires': '0'
+    });
+
+    // Send the image data
+    res.send(response.data);
+
+    logger.info("QR code downloaded successfully:", {
+      paymentId: payment._id,
+      userId,
+      filename,
+      contentType,
+      size: response.data.length
+    });
+
+  } catch (error) {
+    logger.error("Error downloading QR code:", {
+      paymentId,
+      userId,
+      error: error.message,
+      stack: error.stack
+    });
+
+    if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND') {
+      return res.status(503).json({
+        success: false,
+        message: "QR code service temporarily unavailable"
+      });
+    }
+
+    if (error.response?.status === 404) {
+      return res.status(404).json({
+        success: false,
+        message: "QR code image not found"
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to download QR code"
+    });
+  }
 });
