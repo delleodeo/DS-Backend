@@ -24,26 +24,76 @@ class SellerApplicationService {
 
       // Prepare application data
       const sellerApplication = {
-        shopName: applicationData.shopName,
-        shopAddress: applicationData.shopAddress,
+        shopName: applicationData.shopName?.trim(),
+        shopAddress: applicationData.shopAddress?.trim(),
+        address: {
+          // Store display names
+          region: applicationData.region?.trim(),
+          province: applicationData.province?.trim(),
+          municipality: applicationData.municipality?.trim(),
+          barangay: applicationData.barangay?.trim(),
+          zipCode: applicationData.zipCode?.trim(),
+          street: applicationData.street?.trim() || '',
+          additionalInfo: applicationData.additionalInfo?.trim() || '',
+          // Also store codes for reference/lookup
+          regionCode: applicationData.regionCode?.trim() || '',
+          provinceCode: applicationData.provinceCode?.trim() || '',
+          municipalityCode: applicationData.municipalityCode?.trim() || '',
+          barangayCode: applicationData.barangayCode?.trim() || ''
+        },
         status: 'pending',
         submittedAt: new Date()
       };
 
+      // Keep backward-compatible formatted address for legacy UI
+      const composedAddressParts = [
+        sellerApplication.address.street,
+        sellerApplication.address.barangay,
+        sellerApplication.address.municipality,
+        sellerApplication.address.province,
+        sellerApplication.address.region,
+        sellerApplication.address.zipCode
+      ].filter(Boolean);
+      if (composedAddressParts.length) {
+        sellerApplication.shopAddress = composedAddressParts.join(', ');
+      }
+
       // Add file URLs and public IDs if files were uploaded
-      if (files.governmentId && files.governmentId[0]) {
+      if (files?.shopProfile && files.shopProfile[0]) {
+        sellerApplication.shopProfileUrl = files.shopProfile[0].path;
+        sellerApplication.shopProfilePublicId = files.shopProfile[0].filename;
+      }
+
+      if (files?.governmentId && files.governmentId[0]) {
         sellerApplication.governmentIdUrl = files.governmentId[0].path;
         sellerApplication.governmentIdPublicId = files.governmentId[0].filename;
       }
 
-      if (files.birTin && files.birTin[0]) {
+      if (files?.birTin && files.birTin[0]) {
         sellerApplication.birTinUrl = files.birTin[0].path;
         sellerApplication.birTinPublicId = files.birTin[0].filename;
       }
 
-      if (files.dtiOrSec && files.dtiOrSec[0]) {
+      if (files?.dtiOrSec && files.dtiOrSec[0]) {
         sellerApplication.dtiOrSecUrl = files.dtiOrSec[0].path;
         sellerApplication.dtiOrSecPublicId = files.dtiOrSec[0].filename;
+      }
+
+      if (files?.fdaCertificate && files.fdaCertificate[0]) {
+        sellerApplication.fdaCertificateUrl = files.fdaCertificate[0].path;
+        sellerApplication.fdaCertificatePublicId = files.fdaCertificate[0].filename;
+      }
+
+      // Add shop location if coordinates provided
+      const shopLat = parseFloat(applicationData.shopLatitude);
+      const shopLng = parseFloat(applicationData.shopLongitude);
+      if (!isNaN(shopLat) && !isNaN(shopLng) && 
+          shopLat >= -90 && shopLat <= 90 && 
+          shopLng >= -180 && shopLng <= 180) {
+        sellerApplication.shopLocation = {
+          type: 'Point',
+          coordinates: [shopLng, shopLat] // GeoJSON format: [longitude, latitude]
+        };
       }
 
       // Clean up old application files if resubmitting
@@ -99,6 +149,9 @@ class SellerApplicationService {
       }
       if (applicationCopy.dtiOrSecUrl) {
         applicationCopy.dtiOrSecUrl = this.fixDocumentUrl(applicationCopy.dtiOrSecUrl);
+      }
+      if (applicationCopy.fdaCertificateUrl) {
+        applicationCopy.fdaCertificateUrl = this.fixDocumentUrl(applicationCopy.fdaCertificateUrl);
       }
 
       return {
@@ -163,6 +216,7 @@ class SellerApplicationService {
           userObj.sellerApplication.governmentIdUrl = this.fixDocumentUrl(userObj.sellerApplication.governmentIdUrl);
           userObj.sellerApplication.birTinUrl = this.fixDocumentUrl(userObj.sellerApplication.birTinUrl);
           userObj.sellerApplication.dtiOrSecUrl = this.fixDocumentUrl(userObj.sellerApplication.dtiOrSecUrl);
+          userObj.sellerApplication.fdaCertificateUrl = this.fixDocumentUrl(userObj.sellerApplication.fdaCertificateUrl);
         }
         return userObj;
       });
@@ -214,11 +268,13 @@ class SellerApplicationService {
             userId: user._id,
             storeName: user.sellerApplication.shopName,
             address: {
-              street: user.sellerApplication.shopAddress || '',
-              barangay: user.address?.barangay || '',
-              city: user.address?.city || '',
-              province: user.address?.province || '',
-              zipCode: user.address?.zipCode || ''
+              street: user.sellerApplication.address?.street || user.sellerApplication.shopAddress || '',
+              barangay: user.sellerApplication.address?.barangay || user.address?.barangay || '',
+              city: user.sellerApplication.address?.municipality || user.address?.city || '',
+              province: user.sellerApplication.address?.province || user.address?.province || '',
+              region: user.sellerApplication.address?.region || user.address?.province || '',
+              zipCode: user.sellerApplication.address?.zipCode || user.address?.zipCode || '',
+              additionalInfo: user.sellerApplication.address?.additionalInfo || ''
             },
             phoneNumber: user.phone || '',
             isApproved: true,
@@ -226,8 +282,18 @@ class SellerApplicationService {
             documents: [
               user.sellerApplication.governmentIdUrl,
               user.sellerApplication.birTinUrl,
-              user.sellerApplication.dtiOrSecUrl
+              user.sellerApplication.dtiOrSecUrl,
+              user.sellerApplication.fdaCertificateUrl
             ].filter(Boolean), // Remove empty values
+            // Set shop profile image from application
+            imageUrl: user.sellerApplication.shopProfileUrl || null,
+            // Set shop location from application if available
+            location: user.sellerApplication.shopLocation?.coordinates?.length === 2
+              ? {
+                  type: 'Point',
+                  coordinates: user.sellerApplication.shopLocation.coordinates
+                }
+              : undefined,
             // Initialize dashboard stats
             totalProducts: 0,
             totalOrders: 0,
@@ -241,6 +307,12 @@ class SellerApplicationService {
           await vendor.save();
           
           console.log(`✅ Created vendor profile for user ${user.name} (${user.email})`);
+          if (vendorData.location) {
+            console.log(`   📍 Shop location set: [${vendorData.location.coordinates.join(', ')}]`);
+          }
+          if (vendorData.imageUrl) {
+            console.log(`   🖼️ Shop profile image set`);
+          }
         } else {
           console.log(`Vendor profile already exists for user ${user.name} (${user.email})`);
         }
@@ -276,6 +348,9 @@ class SellerApplicationService {
       if (application.dtiOrSecPublicId) {
         filesToDelete.push(application.dtiOrSecPublicId);
       }
+      if (application.fdaCertificatePublicId) {
+        filesToDelete.push(application.fdaCertificatePublicId);
+      }
 
       // Delete files from Cloudinary
       for (const publicId of filesToDelete) {
@@ -303,8 +378,32 @@ class SellerApplicationService {
       errors.push('Shop name is required and must be at least 2 characters long');
     }
 
-    if (!data.shopAddress || data.shopAddress.trim().length < 5) {
-      errors.push('Shop address is required and must be at least 5 characters long');
+    if (!data.region || data.region.trim().length < 2) {
+      errors.push('Region is required');
+    }
+
+    if (!data.province || data.province.trim().length < 2) {
+      errors.push('Province is required');
+    }
+
+    if (!data.municipality || data.municipality.trim().length < 2) {
+      errors.push('Municipality / City is required');
+    }
+
+    if (!data.barangay || data.barangay.trim().length < 2) {
+      errors.push('Barangay is required');
+    }
+
+    if (!data.zipCode || data.zipCode.toString().trim().length < 3) {
+      errors.push('Zip code is required');
+    }
+
+    if (data.street && data.street.length > 150) {
+      errors.push('Street must be 150 characters or fewer');
+    }
+
+    if (data.additionalInfo && data.additionalInfo.length > 300) {
+      errors.push('Additional information must be 300 characters or fewer');
     }
 
     return errors;
@@ -332,12 +431,15 @@ class SellerApplicationService {
         status: 'not_applied',
         shopName: undefined,
         shopAddress: undefined,
+        address: undefined,
         governmentIdUrl: undefined,
         governmentIdPublicId: undefined,
         birTinUrl: undefined,
         birTinPublicId: undefined,
         dtiOrSecUrl: undefined,
         dtiOrSecPublicId: undefined,
+        fdaCertificateUrl: undefined,
+        fdaCertificatePublicId: undefined,
         rejectionReason: undefined,
         submittedAt: undefined,
         reviewedAt: undefined,
@@ -377,7 +479,8 @@ class SellerApplicationService {
       const docFieldMap = {
         governmentId: 'governmentIdUrl',
         birTin: 'birTinUrl',
-        dtiOrSec: 'dtiOrSecUrl'
+        dtiOrSec: 'dtiOrSecUrl',
+        fdaCertificate: 'fdaCertificateUrl'
       };
 
       const urlField = docFieldMap[docType];
@@ -428,6 +531,8 @@ class SellerApplicationService {
       errors.push('DTI or SEC registration document is required');
     }
 
+    // FDA certificate is optional; if provided, allow it
+
     return errors;
   }
 
@@ -462,11 +567,13 @@ class SellerApplicationService {
           userId: user._id,
           storeName: user.sellerApplication?.shopName || user.name || 'Unknown Store',
           address: {
-            street: user.sellerApplication?.shopAddress || '',
-            barangay: user.address?.barangay || '',
-            city: user.address?.city || '',
-            province: user.address?.province || '',
-            zipCode: user.address?.zipCode || ''
+              street: user.sellerApplication?.address?.street || user.sellerApplication?.shopAddress || '',
+              barangay: user.sellerApplication?.address?.barangay || user.address?.barangay || '',
+              city: user.sellerApplication?.address?.municipality || user.address?.city || '',
+              province: user.sellerApplication?.address?.region || user.address?.province || '',
+              region: user.sellerApplication?.address?.region || user.address?.province || '',
+              zipCode: user.sellerApplication?.address?.zipCode || user.address?.zipCode || '',
+              additionalInfo: user.sellerApplication?.address?.additionalInfo || ''
           },
           phoneNumber: user.phone || '',
           isApproved: true,
@@ -474,7 +581,8 @@ class SellerApplicationService {
           documents: [
             user.sellerApplication?.governmentIdUrl,
             user.sellerApplication?.birTinUrl,
-            user.sellerApplication?.dtiOrSecUrl
+              user.sellerApplication?.dtiOrSecUrl,
+              user.sellerApplication?.fdaCertificateUrl
           ].filter(Boolean),
           totalProducts: 0,
           totalOrders: 0,

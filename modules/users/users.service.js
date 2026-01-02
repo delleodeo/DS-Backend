@@ -11,6 +11,90 @@ const { createToken, verifyToken } = require("../../auth/token.js");
 const getUserCacheKey = (id) => `user:profile:${id}`;
 const userRedisOtpKey = (email) => `opt:${email}`;
 
+const trimString = (value) => (typeof value === "string" ? value.trim() : "");
+
+const validateAddress = (address, errors) => {
+	if (!address || typeof address !== "object") {
+		errors.push("Address is required");
+		return {
+			street: "",
+			region: "",
+			regionCode: "",
+			province: "",
+			provinceCode: "",
+			city: "",
+			cityCode: "",
+			barangay: "",
+			barangayCode: "",
+			zipCode: "",
+		};
+	}
+
+	const street = trimString(address.street);
+	if (street.length < 2) errors.push("Street is required");
+
+	const region = trimString(address.region);
+	const regionCode = trimString(address.regionCode);
+	if (region.length < 2 || regionCode.length < 1) errors.push("Region is required");
+
+	const province = trimString(address.province);
+	const provinceCode = trimString(address.provinceCode);
+	if (province.length < 2 || provinceCode.length < 1) errors.push("Province is required");
+
+	const city = trimString(address.city);
+	const cityCode = trimString(address.cityCode);
+	if (city.length < 2 || cityCode.length < 1) errors.push("City / Municipality is required");
+
+	const barangay = trimString(address.barangay);
+	const barangayCode = trimString(address.barangayCode);
+	if (barangay.length < 2) errors.push("Barangay is required");
+
+	const zipCode = trimString(address.zipCode);
+	if (!zipCode) errors.push("Zip code is required");
+	if (zipCode && !/^[0-9]{3,4}$/.test(zipCode)) errors.push("Zip code must be 3-4 digits");
+
+	return {
+		street,
+		region,
+		regionCode,
+		province,
+		provinceCode,
+		city,
+		cityCode,
+		barangay,
+		barangayCode,
+		zipCode,
+	};
+};
+
+const validateRegistrationPayload = ({ name, email, password, phone, address, acceptTos }) => {
+	const errors = [];
+	const trimmedName = trimString(name);
+	const normalizedEmail = trimString(email).toLowerCase();
+	const cleanPhone = trimString(phone);
+	const pwd = typeof password === "string" ? password : "";
+
+	if (trimmedName.length < 2) errors.push("Name is required");
+	if (!normalizedEmail) errors.push("Email is required");
+	if (pwd.length < 8) errors.push("Password must be at least 8 characters");
+	if (cleanPhone.length < 6) errors.push("Phone is required");
+
+	const cleanAddress = validateAddress(address, errors);
+
+	if (errors.length) {
+		throw { status: 400, message: errors.join(", ") };
+	}
+
+	return {
+		name: trimmedName,
+		email: normalizedEmail,
+		password: pwd,
+		phone: cleanPhone,
+		address: cleanAddress,
+		acceptTos: !!acceptTos,
+	};
+};
+
 exports.verifyAndRegister = async ({
 	name,
 	email,
@@ -18,16 +102,18 @@ exports.verifyAndRegister = async ({
 	phone,
 	address,
 	otp,
+	acceptTos,
 }) => {
-	const existing = await User.findOne({ email });
+	const sanitized = validateRegistrationPayload({ name, email, password, phone, address, acceptTos });
+	const existing = await User.findOne({ email: sanitized.email });
 	if (existing) throw { status: 400, message: "Email already registered" };
-	console.log(email);
+	console.log(sanitized.email);
 	
 	if (!isRedisAvailable()) {
 		throw { status: 503, message: "OTP service temporarily unavailable" };
 	}
 	
-	const registration = await redisClient.get(userRedisOtpKey(email)).catch(() => null);
+	const registration = await redisClient.get(userRedisOtpKey(sanitized.email)).catch(() => null);
 	if (!registration) {
 		throw { status: 400, message: "No OTP request found for this email" };
 	}
@@ -38,22 +124,23 @@ exports.verifyAndRegister = async ({
 		throw { status: 400, message: "Invalid or expired OTP" };
 	}
 
-	const hashed = await bcrypt.hash(password, 12);
+	const hashed = await bcrypt.hash(sanitized.password, 12);
 
 	const user = await User.create({
-		name,
-		email,
+		name: sanitized.name,
+		email: sanitized.email,
 		password: hashed,
-		phone,
-		address,
+		phone: sanitized.phone,
+		address: sanitized.address,
 		isVerified: true,
+		acceptTos: sanitized.acceptTos,
 	});
 
 	await Admin.updateOne({}, { $inc: { totalUsers: 1, newUsersCount: 1 } });
 
 	if (isRedisAvailable()) {
 		const { safeDel } = require("../../config/redis");
-		await safeDel(userRedisOtpKey(email));
+		await safeDel(userRedisOtpKey(sanitized.email));
 	} 
 
 	const token = createToken(user);

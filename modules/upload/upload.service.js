@@ -30,7 +30,7 @@ function uploadBufferToCloudinary(buffer, options = {}) {
 const uploadDocuments = multer({
   storage: memoryStorage,
   limits: { 
-    files: 3, // Max 3 files (gov ID, BIR, DTI/SEC)
+    files: 5, // Shop profile, Government ID, BIR, DTI/SEC, optional FDA certificate
     fileSize: 10 * 1024 * 1024 // 10MB limit per file
   },
   fileFilter: (req, file, cb) => {

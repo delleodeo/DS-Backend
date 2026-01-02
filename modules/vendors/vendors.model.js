@@ -28,6 +28,24 @@ const AddressSchema = new mongoose.Schema(
     city: String,
     province: String,
     zipCode: String,
+    region: String,
+    additionalInfo: String,
+  },
+  { _id: false }
+);
+
+// GeoJSON Point schema for shop location
+const LocationSchema = new mongoose.Schema(
+  {
+    type: {
+      type: String,
+      enum: ['Point'],
+      default: 'Point'
+    },
+    coordinates: {
+      type: [Number], // [longitude, latitude]
+      required: true
+    }
   },
   { _id: false }
 );
@@ -46,6 +64,9 @@ const VendorSchema = new mongoose.Schema({
   address: AddressSchema,
   imageUrl: String, // Logo or profile image
   bannerUrl: String, // Optional banner
+  
+  // Shop location for map display
+  location: LocationSchema,
 
   // Verification
   isApproved: { type: Boolean, default: false },
@@ -86,5 +107,8 @@ VendorSchema.pre("save", function (next) {
   this.updatedAt = new Date();
   next();
 });
+
+// 2dsphere index for geospatial queries (find nearby shops)
+VendorSchema.index({ location: '2dsphere' });
 
 module.exports = mongoose.model("Vendor", VendorSchema);

@@ -5,6 +5,7 @@ const Admin = require("../admin/admin.model");
 const sanitizeMongoInput = require("../../utils/sanitizeMongoInput");
 const paymongoClient = require("../../utils/paymongoClient");
 const logger = require("../../utils/logger");
+const { safeDel, isRedisAvailable } = require("../../config/redis");
 const mongoose = require("mongoose");
 const {
   ValidationError,
@@ -14,6 +15,12 @@ const {
   DatabaseError,
 } = require("../../utils/errorHandler");
 const crypto = require("crypto");
+
+// Cache key helpers (mirrors orders.service)
+const getUserOrdersKey = (userId) => `orders:user:${userId}`;
+const getVendorOrdersKey = (vendorId) => `orders:vendor:${vendorId}`;
+const getProductOrdersKey = (productId) => `orders:product:${productId}`;
+const getOrderKey = (id) => `orders:${id}`;
 
 /**
  * Helper function to generate tracking number
@@ -911,6 +918,33 @@ class PaymentService {
         return freshPayment.orderIds || [];
       }
 
+      // Lightweight lock to avoid duplicate order creation when webhook and polling race
+      const staleLockCutoff = new Date(Date.now() - 10 * 60 * 1000); // allow retry after 10 minutes
+      const lockResult = await Payment.updateOne(
+        {
+          _id: payment._id,
+          ordersCreated: false,
+          $or: [
+            { orderCreationError: { $ne: "in_progress" } },
+            { updatedAt: { $lt: staleLockCutoff } }
+          ]
+        },
+        { $set: { orderCreationError: "in_progress" } }
+      );
+
+      const wasLocked = (lockResult.modifiedCount ?? lockResult.nModified ?? 0) > 0;
+      if (!wasLocked) {
+        const existing = await Payment.findById(payment._id, "orderIds ordersCreated orderCreationError updatedAt");
+        logger.warn("Order creation skipped because another worker is handling it", {
+          paymentId: payment._id,
+          ordersCreated: existing?.ordersCreated,
+          orderIds: existing?.orderIds,
+          orderCreationError: existing?.orderCreationError,
+          updatedAt: existing?.updatedAt
+        });
+        return existing?.orderIds || [];
+      }
+
       const checkoutData = freshPayment.checkoutData;
       const userId = freshPayment.userId;
       const paymentId = freshPayment._id;
@@ -1058,6 +1092,36 @@ class PaymentService {
           logger.error("Failed to update admin stats (non-critical):", adminError.message);
         }
 
+        // Invalidate user/vendor/order caches so newly created orders show immediately
+        if (isRedisAvailable()) {
+          try {
+            const vendorIds = Object.keys(groupedItems);
+            const orderKeys = createdOrderIds.map(id => getOrderKey(id.toString()));
+            await safeDel([
+              getUserOrdersKey(userId),
+              ...vendorIds.map(getVendorOrdersKey),
+              ...orderKeys
+            ]);
+
+            // Optionally clear product order caches if productId present
+            const productKeys = [];
+            for (const items of Object.values(groupedItems)) {
+              for (const item of items) {
+                if (item.productId) {
+                  productKeys.push(getProductOrdersKey(item.productId.toString())) ;
+                }
+              }
+            }
+            if (productKeys.length) {
+              await safeDel(productKeys);
+            }
+
+            await safeDel("adminDashboardStats");
+          } catch (cacheErr) {
+            logger.warn("Order cache invalidation failed:", cacheErr.message);
+          }
+        }
+
         logger.info("Orders created successfully from payment:", {
           paymentId,
           orderIds: createdOrderIds,
@@ -1080,10 +1144,11 @@ class PaymentService {
         stack: error.stack
       });
       
-      // Store error in payment for debugging
+      // Store error in payment for debugging (and release lock)
       try {
         await Payment.findByIdAndUpdate(payment._id, {
-          orderCreationError: error.message
+          orderCreationError: error.message,
+          ordersCreated: false
         });
       } catch (updateError) {
         logger.error("Failed to update payment with error:", updateError.message);
@@ -1106,16 +1171,30 @@ class PaymentService {
         throw new ValidationError("Invalid webhook signature");
       }
 
-      const eventType = payload.data.attributes.type;
-      const paymentIntentId = payload.data.attributes.data.id;
+      const eventType = payload?.data?.attributes?.type;
+      const paymentData = payload?.data?.attributes?.data;
+      const paymentResourceId = paymentData?.id; // pay_xxx
+      const paymentAttributes = paymentData?.attributes || {};
+      const paymentIntentId = paymentAttributes.payment_intent_id || paymentAttributes.payment_intent?.id;
 
-      logger.info("Processing webhook:", { eventType, paymentIntentId });
+      logger.info("Processing webhook:", { eventType, paymentIntentId, paymentResourceId });
 
-      // Find payment by intent ID
-      const payment = await Payment.findOne({ paymentIntentId });
+      // Find payment by intent ID (preferred) then fall back to payment resource id
+      let payment = null;
+      if (paymentIntentId) {
+        payment = await Payment.findOne({ paymentIntentId });
+      }
+      if (!payment && paymentResourceId) {
+        payment = await Payment.findOne({ chargeId: paymentResourceId });
+      }
       if (!payment) {
-        logger.warn("Payment not found for webhook:", { paymentIntentId });
+        logger.warn("Payment not found for webhook", { paymentIntentId, paymentResourceId });
         return;
+      }
+
+      // Backfill missing paymentIntentId if webhook carried it
+      if (!payment.paymentIntentId && paymentIntentId) {
+        payment.paymentIntentId = paymentIntentId;
       }
 
       // Mark webhook as received

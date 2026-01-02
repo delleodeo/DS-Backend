@@ -3,9 +3,14 @@ const mongoose = require("mongoose");
 const AddressSchema = new mongoose.Schema(
   {
     street: { type: String, default: "" },
-    barangay: { type: String, default: "" },
-    city: { type: String, default: "" },
+    region: { type: String, default: "" },
+    regionCode: { type: String, default: "" },
     province: { type: String, default: "" },
+    provinceCode: { type: String, default: "" },
+    city: { type: String, default: "" },
+    cityCode: { type: String, default: "" },
+    barangay: { type: String, default: "" },
+    barangayCode: { type: String, default: "" },
     zipCode: { type: String, default: "" },
   },
   { _id: false }
@@ -53,12 +58,43 @@ const UserSchema = new mongoose.Schema({
     type: {
       shopName: { type: String },
       shopAddress: { type: String },
+      address: {
+        region: { type: String },
+        province: { type: String },
+        municipality: { type: String },
+        barangay: { type: String },
+        zipCode: { type: String },
+        street: { type: String },
+        additionalInfo: { type: String },
+        // Store location codes for reference
+        regionCode: { type: String },
+        provinceCode: { type: String },
+        municipalityCode: { type: String },
+        barangayCode: { type: String }
+      },
       governmentIdUrl: { type: String },
       governmentIdPublicId: { type: String },
       birTinUrl: { type: String },
       birTinPublicId: { type: String },
       dtiOrSecUrl: { type: String },
       dtiOrSecPublicId: { type: String },
+      fdaCertificateUrl: { type: String },
+      fdaCertificatePublicId: { type: String },
+      // Shop profile image (required)
+      shopProfileUrl: { type: String },
+      shopProfilePublicId: { type: String },
+      // Shop location coordinates (optional)
+      shopLocation: {
+        type: {
+          type: String,
+          enum: ['Point'],
+          default: 'Point'
+        },
+        coordinates: {
+          type: [Number], // [longitude, latitude]
+          default: undefined
+        }
+      },
       status: {
         type: String,
         enum: ["not_applied", "pending", "approved", "rejected"],
