@@ -68,41 +68,46 @@ const OrderSchema = new mongoose.Schema({
   trackingNumber: String,
   paymentMethod: {
     type: String,
-    enum: ["wallet", "gcash", "cod"],
+    enum: ["wallet", "gcash", "cod", "qrph"],
     required: true,
   },
+  paymentId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Payment",
+  },
+  paidAt: Date,
   status: {
     type: String,
     enum: [
-      "pending",           // Order created, awaiting payment
-      "paid",              // Payment received (held in escrow)
-      "shipped",           // Order shipped by vendor
-      "delivered",         // Order delivered to customer
-      "pending_release",   // Delivered, awaiting admin approval for payment release
-      "released",          // Payment released to seller
-      "cancelled",         // Order cancelled
-      "refund_requested",  // Customer requested refund
-      "refund_approved",   // Admin approved refund
-      "refunded"           // Refund completed
+      "pending", // Order created, awaiting payment
+      "paid", // Payment received (held in escrow)
+      "shipped", // Order shipped by vendor
+      "delivered", // Order delivered to customer
+      "pending_release", // Delivered, awaiting admin approval for payment release
+      "released", // Payment released to seller
+      "cancelled", // Order cancelled
+      "refund_requested", // Customer requested refund
+      "refund_approved", // Admin approved refund
+      "refunded", // Refund completed
     ],
     default: "pending",
   },
-  
+
   // 💰 Escrow Tracking
   escrowStatus: {
     type: String,
     enum: ["not_applicable", "held", "pending_release", "released", "refunded"],
-    default: "not_applicable"
+    default: "not_applicable",
   },
   escrowHeldAt: { type: Date },
   escrowReleasedAt: { type: Date },
   escrowReleasedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-  
+
   // 🔄 Refund Tracking
   refundStatus: {
     type: String,
     enum: ["none", "requested", "approved", "rejected", "processed"],
-    default: "none"
+    default: "none",
   },
   refundRequestedAt: { type: Date },
   refundRequestedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
@@ -113,7 +118,7 @@ const OrderSchema = new mongoose.Schema({
   refundSource: {
     type: String,
     enum: ["escrow", "seller_wallet", "seller_future_payout"],
-    default: "escrow"
+    default: "escrow",
   },
   refundNotes: { type: String },
 
@@ -136,16 +141,20 @@ const OrderSchema = new mongoose.Schema({
 });
 
 // Pre-save middleware to calculate commission
-OrderSchema.pre('save', function(next) {
+OrderSchema.pre("save", function (next) {
   if (this.subTotal && this.commissionRate) {
-    this.commissionAmount = parseFloat((this.subTotal * this.commissionRate).toFixed(2));
-    this.sellerEarnings = parseFloat((this.subTotal - this.commissionAmount).toFixed(2));
-    
+    this.commissionAmount = parseFloat(
+      (this.subTotal * this.commissionRate).toFixed(2)
+    );
+    this.sellerEarnings = parseFloat(
+      (this.subTotal - this.commissionAmount).toFixed(2)
+    );
+
     // For digital payments (wallet, gcash), mark commission as paid when order is delivered
     // For COD, commission remains pending until manually collected
-    if (this.status === 'delivered') {
-      if (this.paymentMethod !== 'cod' && this.commissionStatus === 'pending') {
-        this.commissionStatus = 'paid';
+    if (this.status === "delivered") {
+      if (this.paymentMethod !== "cod" && this.commissionStatus === "pending") {
+        this.commissionStatus = "paid";
         this.commissionPaidAt = new Date();
       }
     }

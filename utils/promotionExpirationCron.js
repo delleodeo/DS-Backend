@@ -1,5 +1,6 @@
 const cron = require('node-cron');
-const { deactivateExpiredPromotions } = require('../modules/products/promotion.service.js');
+const { deactivateExpiredPromotions } = require('../modules/products/product-promotions/promotion.service.js');
+const logger = require('./logger');
 
 /**
  * Start the promotion expiration cron job
@@ -9,17 +10,17 @@ function startPromotionExpirationCron() {
   // Run every 15 minutes for more timely promotion expiration handling
   cron.schedule('*/15 * * * *', async () => {
     try {
-      console.log('[Promotion Cron] Starting expired promotion check...');
+      logger.info('[Promotion Cron] Starting expired promotion check...');
       const result = await deactivateExpiredPromotions();
       if (result.total > 0) {
-        console.log(`[Promotion Cron] Completed. Deactivated ${result.total} promotions`);
+        logger.info(`[Promotion Cron] Completed. Deactivated ${result.total} promotions`);
       }
     } catch (error) {
-      console.error('[Promotion Cron] Error checking expired promotions:', error);
+      logger.error('[Promotion Cron] Error checking expired promotions:', error);
     }
   });
   
-  console.log('[Promotion Cron] Promotion expiration cron job scheduled (runs every 15 minutes)');
+  logger.info('[Promotion Cron] Promotion expiration cron job scheduled (runs every 15 minutes)');
 }
 
 /**
@@ -28,12 +29,12 @@ function startPromotionExpirationCron() {
  */
 async function manualPromotionExpiration() {
   try {
-    console.log('[Manual Promotion Check] Starting...');
+    logger.info('[Manual Promotion Check] Starting...');
     const result = await deactivateExpiredPromotions();
-    console.log(`[Manual Promotion Check] Completed. Deactivated ${result.total} promotions`);
+    logger.info(`[Manual Promotion Check] Completed. Deactivated ${result.total} promotions`);
     return result;
   } catch (error) {
-    console.error('[Manual Promotion Check] Error:', error);
+    logger.error('[Manual Promotion Check] Error:', error);
     throw error;
   }
 }

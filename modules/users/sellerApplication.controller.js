@@ -1,4 +1,6 @@
 const sellerApplicationService = require('./sellerApplication.service');
+const sanitizeMongoInput = require('../../utils/sanitizeMongoInput');
+const { ValidationError, AuthorizationError, formatErrorResponse } = require('../../utils/errorHandler');
 
 class SellerApplicationController {
   /**
@@ -8,26 +10,20 @@ class SellerApplicationController {
   async submitApplication(req, res) {
     try {
       const userId = req.user.id || req.user._id;
-      const applicationData = req.body;
+      const applicationData = sanitizeMongoInput(req.body);
 
       // Validate application data
       const dataErrors = sellerApplicationService.validateApplicationData(applicationData);
       if (dataErrors.length > 0) {
-        return res.status(400).json({
-          success: false,
-          error: 'Validation failed',
-          details: dataErrors
-        });
+        const error = new ValidationError('Validation failed', dataErrors);
+        return res.status(error.status).json(formatErrorResponse(error));
       }
 
       // Validate uploaded files
       const fileErrors = sellerApplicationService.validateFiles(req.files);
       if (fileErrors.length > 0) {
-        return res.status(400).json({
-          success: false,
-          error: 'File validation failed',
-          details: fileErrors
-        });
+        const error = new ValidationError('File validation failed', fileErrors);
+        return res.status(error.status).json(formatErrorResponse(error));
       }
 
       // Submit application
@@ -41,20 +37,17 @@ class SellerApplicationController {
 
     } catch (error) {
       console.error('Submit application error:', error);
-      
+
       if (error.message.includes('already have a pending') || 
           error.message.includes('already a seller')) {
-        return res.status(409).json({
-          success: false,
-          error: error.message
-        });
+        const conflictError = new ValidationError(error.message);
+        conflictError.status = 409;
+        return res.status(conflictError.status).json(formatErrorResponse(conflictError));
       }
 
-      res.status(500).json({
-        success: false,
-        error: 'Failed to submit seller application',
-        details: error.message
-      });
+      const unexpected = new ValidationError('Failed to submit seller application');
+      unexpected.status = 500;
+      res.status(unexpected.status).json(formatErrorResponse(unexpected));
     }
   }
 
@@ -88,12 +81,9 @@ class SellerApplicationController {
    */
   async getPendingApplications(req, res) {
     try {
-      // Check if user is admin
       if (req.user.role !== 'admin') {
-        return res.status(403).json({
-          success: false,
-          error: 'Access denied. Admin role required.'
-        });
+        const error = new AuthorizationError('Access denied. Admin role required.');
+        return res.status(error.status).json(formatErrorResponse(error));
       }
 
       const applications = await sellerApplicationService.getPendingApplications();
@@ -106,11 +96,9 @@ class SellerApplicationController {
 
     } catch (error) {
       console.error('Get pending applications error:', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to get pending applications',
-        details: error.message
-      });
+      const unexpected = new ValidationError('Failed to get pending applications');
+      unexpected.status = 500;
+      res.status(unexpected.status).json(formatErrorResponse(unexpected));
     }
   }
 
@@ -127,26 +115,22 @@ class SellerApplicationController {
 
     } catch (error) {
       console.error('Cancel application error:', error);
-      
+
       if (error.message.includes('not found')) {
-        return res.status(404).json({
-          success: false,
-          error: error.message
-        });
+        const notFound = new ValidationError(error.message);
+        notFound.status = 404;
+        return res.status(notFound.status).json(formatErrorResponse(notFound));
       }
 
       if (error.message.includes('Only pending applications')) {
-        return res.status(400).json({
-          success: false,
-          error: error.message
-        });
+        const invalid = new ValidationError(error.message);
+        invalid.status = 400;
+        return res.status(invalid.status).json(formatErrorResponse(invalid));
       }
 
-      res.status(500).json({
-        success: false,
-        error: 'Failed to cancel application',
-        details: error.message
-      });
+      const unexpected = new ValidationError('Failed to cancel application');
+      unexpected.status = 500;
+      res.status(unexpected.status).json(formatErrorResponse(unexpected));
     }
   }
 
@@ -156,24 +140,20 @@ class SellerApplicationController {
    */
   async reviewApplication(req, res) {
     try {
-      // Check if user is admin
       if (req.user.role !== 'admin') {
-        return res.status(403).json({
-          success: false,
-          error: 'Access denied. Admin role required.'
-        });
+        const error = new AuthorizationError('Access denied. Admin role required.');
+        return res.status(error.status).json(formatErrorResponse(error));
       }
 
       const { userId } = req.params;
-      const { decision, rejectionReason } = req.body;
+      const decision = (req.body.decision || '').trim().toLowerCase();
+      const rejectionReason = sanitizeMongoInput(req.body.rejectionReason);
       const reviewerId = req.user.id || req.user._id;
 
       // Validate decision
       if (!['approved', 'rejected'].includes(decision)) {
-        return res.status(400).json({
-          success: false,
-          error: 'Invalid decision. Must be "approved" or "rejected"'
-        });
+        const error = new ValidationError('Invalid decision. Must be "approved" or "rejected"');
+        return res.status(error.status).json(formatErrorResponse(error));
       }
 
       // If rejecting, reason is required
@@ -181,10 +161,8 @@ class SellerApplicationController {
         decision === 'rejected' &&
         (!rejectionReason || !rejectionReason.trim())
       ) {
-        return res.status(400).json({
-          success: false,
-          error: 'Rejection reason is required when rejecting an application'
-        });
+        const error = new ValidationError('Rejection reason is required when rejecting an application');
+        return res.status(error.status).json(formatErrorResponse(error));
       }
 
       const result = await sellerApplicationService.reviewApplication(
@@ -198,19 +176,16 @@ class SellerApplicationController {
 
     } catch (error) {
       console.error('Review application error:', error);
-      
+
       if (error.message.includes('not found') || error.message.includes('not pending')) {
-        return res.status(404).json({
-          success: false,
-          error: error.message
-        });
+        const notFound = new ValidationError(error.message);
+        notFound.status = 404;
+        return res.status(notFound.status).json(formatErrorResponse(notFound));
       }
 
-      res.status(500).json({
-        success: false,
-        error: 'Failed to review application',
-        details: error.message
-      });
+      const unexpected = new ValidationError('Failed to review application');
+      unexpected.status = 500;
+      res.status(unexpected.status).json(formatErrorResponse(unexpected));
     }
   }
 
@@ -220,6 +195,11 @@ class SellerApplicationController {
    */
   async getDocumentUrl(req, res) {
     try {
+      if (req.user.role !== 'admin') {
+        const error = new AuthorizationError('Access denied. Admin role required.');
+        return res.status(error.status).json(formatErrorResponse(error));
+      }
+
       const { userId, docType } = req.params;
       const result = await sellerApplicationService.getDocumentUrl(userId, docType);
       res.json(result);
@@ -227,17 +207,14 @@ class SellerApplicationController {
       console.error('Get document URL error:', error);
       
       if (error.message.includes('not found')) {
-        return res.status(404).json({
-          success: false,
-          error: error.message
-        });
+        const notFound = new ValidationError(error.message);
+        notFound.status = 404;
+        return res.status(notFound.status).json(formatErrorResponse(notFound));
       }
 
-      res.status(500).json({
-        success: false,
-        error: 'Failed to get document URL',
-        details: error.message
-      });
+      const unexpected = new ValidationError('Failed to get document URL');
+      unexpected.status = 500;
+      res.status(unexpected.status).json(formatErrorResponse(unexpected));
     }
   }
 
@@ -247,12 +224,9 @@ class SellerApplicationController {
    */
   async createMissingVendorProfiles(req, res) {
     try {
-      // Check if user is admin
       if (req.user.role !== 'admin') {
-        return res.status(403).json({
-          success: false,
-          error: 'Access denied. Admin role required.'
-        });
+        const error = new AuthorizationError('Access denied. Admin role required.');
+        return res.status(error.status).json(formatErrorResponse(error));
       }
 
       const result = await sellerApplicationService.createMissingVendorProfiles();
@@ -260,11 +234,9 @@ class SellerApplicationController {
 
     } catch (error) {
       console.error('Create missing vendor profiles error:', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to create missing vendor profiles',
-        details: error.message
-      });
+      const unexpected = new ValidationError('Failed to create missing vendor profiles');
+      unexpected.status = 500;
+      res.status(unexpected.status).json(formatErrorResponse(unexpected));
     }
   }
 }

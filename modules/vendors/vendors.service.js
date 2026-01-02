@@ -36,10 +36,19 @@ exports.followVendor = async (vendorId, userId) => {
 			await safeDel(`vendor:details:${vendorId}`);
 		}
 
-		const vendor = await Vendor.findOne({ userId: vendorId });
+		// Support both vendor _id and vendor.userId in the route param
+		let vendor = await Vendor.findById(vendorId);
+		if (!vendor) {
+			vendor = await Vendor.findOne({ userId: vendorId });
+		}
 
 		if (!vendor) {
-			throw new Error("Vendor not found");
+ 			throw new Error("Vendor not found");
+		}
+
+		// Prevent users from following themselves
+		if (String(vendor.userId) === String(userId)) {
+			throw new Error("You cannot follow your own shop");
 		}
 
 		// Convert userId to string for consistent comparison

@@ -7,36 +7,60 @@ const passport = require("./modules/users/passport");
 const cookieParser = require("cookie-parser");
 const { createSession } = require("./auth/session");
 const rateLimiter = require("./utils/rateLimiter");
+const logger = require("./utils/logger");
+const { errorHandler } = require("./utils/errorHandler");
+const helmet = require("helmet");
+
+// Security headers
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+        fontSrc: ["'self'", "https://fonts.gstatic.com"],
+        imgSrc: ["'self'", "data:", "https:", "http:"],
+        scriptSrc: ["'self'"],
+        connectSrc: ["'self'"],
+        objectSrc: ["'none'"],
+        upgradeInsecureRequests: [],
+      },
+    },
+    crossOriginEmbedderPolicy: false,
+  })
+);
 
 // middleware
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
+app.use(express.json({ limit: "50mb" }));
+app.use(express.urlencoded({ limit: "50mb", extended: true }));
 app.use(rateLimiter({ windowSec: 60, maxRequests: 1500, keyPrefix: "global" }));
 app.use(createSession);
 app.use(
   cors({
     origin: [
       "https://darylbacongco.me",
+      "http://127.0.0.1:5500",
       "http://localhost:3000",
-      "http://localhost:3001",  // Add this for the 404 error fix
+      "http://localhost:3001", // Add this for the 404 error fix
       "http://localhost:3002",
-      "http://localhost:5173", 
-      "http://localhost:4173"  // Add Vite preview
+      "http://localhost:5173",
+      "http://localhost:4173", // Add Vite preview
     ], // your actual frontend domain
     credentials: true, // VERY IMPORTANT — allows cookies
   })
 );
 
-app.use(cookieParser())
+app.use(cookieParser());
 app.use(passport.initialize());
 app.use(passport.session());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
 app.use(morgan("dev"));
 
 // Serve static files for testing
-app.use(express.static('public'));
+app.use(express.static("public"));
 
 app.use("/v1", routes);
+
+// Centralized error handler - ensures consistent error responses
+app.use(errorHandler);
 
 module.exports = app;

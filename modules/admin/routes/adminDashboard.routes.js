@@ -71,8 +71,8 @@ router.post('/commission/:orderId/waive', adminController.waiveCommission);
 // CATEGORIES
 // ============================================
 router.get('/categories', adminController.getAllCategories);
-router.post('/categories', uploadTemp.single('image'), adminController.createCategory);
-router.put('/categories/:categoryId', uploadTemp.single('image'), adminController.updateCategory);
+router.post('/categories', uploadTemp.single('image'), require('../../upload/upload.service').tempUploadHandler, adminController.createCategory);
+router.put('/categories/:categoryId', uploadTemp.single('image'), require('../../upload/upload.service').tempUploadHandler, adminController.updateCategory);
 router.delete('/categories/:categoryId', adminController.deleteCategory);
 router.post('/categories/:categoryId/toggle', adminController.toggleCategoryStatus);
 
@@ -84,11 +84,11 @@ router.get('/banners/active', adminController.getActiveBanners);
 router.post('/banners', uploadTemp.fields([
   { name: 'image', maxCount: 1 },
   { name: 'productImage', maxCount: 1 }
-]), adminController.createBanner);
+]), require('../../upload/upload.service').tempUploadHandler, adminController.createBanner);
 router.put('/banners/:bannerId', uploadTemp.fields([
   { name: 'image', maxCount: 1 },
   { name: 'productImage', maxCount: 1 }
-]), adminController.updateBanner);
+]), require('../../upload/upload.service').tempUploadHandler, adminController.updateBanner);
 router.delete('/banners/:bannerId', adminController.deleteBanner);
 router.post('/banners/:bannerId/toggle', adminController.toggleBannerStatus);
 router.post('/banners/:bannerId/interaction', adminController.recordBannerInteraction);

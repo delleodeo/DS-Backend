@@ -31,8 +31,50 @@ function initSocket(server) {
     maxHttpBufferSize: 1e6 // 1MB limit for security
   });
 
+  // Simple in-memory rate limiter map for socket events (per-user)
+  const socketRateMap = new Map();
+
+  // Authenticate sockets via JWT sent in handshake (auth: { token })
+  io.use(async (socket, next) => {
+    try {
+      const token = socket.handshake.auth?.token || (socket.handshake.headers && socket.handshake.headers.authorization && socket.handshake.headers.authorization.split(' ')[1]);
+      if (!token) return next(new Error('Authentication required'));
+
+      const { verifyToken } = require('../auth/token');
+      const TokenBlacklist = require('../auth/tokenBlacklist');
+      const User = require('../modules/users/users.model');
+
+      const isBlacklisted = await TokenBlacklist.isTokenBlacklisted(token);
+      if (isBlacklisted) return next(new Error('Invalid token'));
+
+      const decoded = verifyToken(token);
+      const user = await User.findById(decoded.id).select('name imageUrl role');
+      if (!user) return next(new Error('User not found'));
+
+      // Attach minimal user info to socket
+      socket.user = { id: decoded.id, role: decoded.role, name: user.name, imageUrl: user.imageUrl };
+      socket.token = token;
+
+      // Join personal room for targeted events
+      socket.join(`user_${decoded.id}`);
+
+      return next();
+    } catch (err) {
+      console.error('Socket auth error:', err);
+      return next(new Error('Invalid token'));
+    }
+  });
+
+  // Cleanup socketRateMap on disconnect
   io.on('connection', (socket) => {
-    console.log('User connected:', socket.id);
+    socket.on('disconnect', () => {
+      if (socket?.user?.id) socketRateMap.delete(socket.user.id);
+    });
+  });
+
+
+  io.on('connection', (socket) => {
+    console.log('User connected:', socket.id, 'user:', socket.user?.id || 'unauthenticated');
 
     // Handle joining order rooms
     socket.on('join_order', (orderId) => {
@@ -69,11 +111,28 @@ function initSocket(server) {
 
     // ==================== MESSAGING EVENTS ====================
     
-    // Join conversation room
-    socket.on('join_conversation', (conversationId) => {
-      console.log(`💬 [SOCKET] Socket ${socket.id} joined conversation: ${conversationId}`);
-      socket.join(`conversation_${conversationId}`);
-      socket.emit('joined_conversation', { conversationId });
+    // Join conversation room (only participants)
+    socket.on('join_conversation', async (conversationId) => {
+      try {
+        const Conversation = require('../modules/messages/conversation.model');
+        const conv = await Conversation.findById(conversationId);
+        if (!conv) {
+          socket.emit('message_error', { error: 'Conversation not found' });
+          return;
+        }
+
+        const isParticipant = conv.customerId.toString() === socket.user.id.toString() || conv.vendorId.toString() === socket.user.id.toString();
+        if (!isParticipant) {
+          socket.emit('message_error', { error: 'You are not part of this conversation' });
+          return;
+        }
+
+        socket.join(`conversation_${conversationId}`);
+        socket.emit('joined_conversation', { conversationId });
+      } catch (err) {
+        console.error('❌ [SOCKET] join_conversation error:', err);
+        socket.emit('message_error', { error: 'Failed to join conversation' });
+      }
     });
 
     // Leave conversation room
@@ -86,21 +145,39 @@ function initSocket(server) {
     // Send message via Socket.IO (real-time)
     socket.on('send_message', async (data) => {
       try {
+        // Simple per-user rate limit (5 messages per second)
+        const now = Date.now();
+        const windowMs = 1000; // 1 second
+        const maxMessages = 5;
+        const userKey = socket.user.id;
+        const entry = socketRateMap.get(userKey) || { start: now, count: 0 };
+        if (now - entry.start > windowMs) {
+          entry.start = now;
+          entry.count = 0;
+        }
+        entry.count += 1;
+        if (entry.count > maxMessages) {
+          socket.emit('message_error', { error: 'Rate limit exceeded' });
+          return;
+        }
+        socketRateMap.set(userKey, entry);
+
         const messageService = require('../modules/messages/message.service');
         
-        console.log(`💬 [SOCKET] Sending message in conversation ${data.conversationId}`);
+        console.log(`💬 [SOCKET] Sending message in conversation ${data.conversationId} by user ${socket.user?.id}`);
         
-        // Send message through service
-        const message = await messageService.sendMessageService({
+        // Build message payload using authenticated user (ignore client-supplied senderId/senderType)
+        const messagePayload = {
           conversationId: data.conversationId,
-          senderId: data.senderId,
-          senderType: data.senderType,
+          senderId: socket.user.id,
           content: data.content,
           messageType: data.messageType || 'text',
           imageUrl: data.imageUrl,
           referenceId: data.referenceId,
           referenceType: data.referenceType
-        });
+        };
+
+        const message = await messageService.sendMessageService(messagePayload);
 
         // Emit to all users in conversation room
         io.to(`conversation_${data.conversationId}`).emit('new_message', message);
@@ -111,26 +188,42 @@ function initSocket(server) {
         console.log(`✅ [SOCKET] Message sent successfully: ${message._id}`);
       } catch (error) {
         console.error(`❌ [SOCKET] Error sending message:`, error);
-        socket.emit('message_error', { error: error.message });
+        socket.emit('message_error', { error: 'Failed to send message' });
       }
     });
 
-    // Typing indicator
-    socket.on('typing_start', (data) => {
-      console.log(`💬 [SOCKET] User typing in conversation ${data.conversationId}`);
-      socket.to(`conversation_${data.conversationId}`).emit('user_typing', {
-        conversationId: data.conversationId,
-        userId: data.userId,
-        userName: data.userName
-      });
+    // Typing indicator - use authenticated user info and verify membership
+    socket.on('typing_start', async (data) => {
+      try {
+        const Conversation = require('../modules/messages/conversation.model');
+        const conv = await Conversation.findById(data.conversationId);
+        if (!conv) return;
+        const isParticipant = conv.customerId.toString() === socket.user.id.toString() || conv.vendorId.toString() === socket.user.id.toString();
+        if (!isParticipant) return;
+        socket.to(`conversation_${data.conversationId}`).emit('user_typing', {
+          conversationId: data.conversationId,
+          userId: socket.user.id,
+          userName: socket.user.name
+        });
+      } catch (err) {
+        console.error('❌ [SOCKET] typing_start error:', err);
+      }
     });
 
-    socket.on('typing_stop', (data) => {
-      console.log(`💬 [SOCKET] User stopped typing in conversation ${data.conversationId}`);
-      socket.to(`conversation_${data.conversationId}`).emit('user_stopped_typing', {
-        conversationId: data.conversationId,
-        userId: data.userId
-      });
+    socket.on('typing_stop', async (data) => {
+      try {
+        const Conversation = require('../modules/messages/conversation.model');
+        const conv = await Conversation.findById(data.conversationId);
+        if (!conv) return;
+        const isParticipant = conv.customerId.toString() === socket.user.id.toString() || conv.vendorId.toString() === socket.user.id.toString();
+        if (!isParticipant) return;
+        socket.to(`conversation_${data.conversationId}`).emit('user_stopped_typing', {
+          conversationId: data.conversationId,
+          userId: socket.user.id
+        });
+      } catch (err) {
+        console.error('❌ [SOCKET] typing_stop error:', err);
+      }
     });
 
     // Mark messages as read (real-time notification)
@@ -138,16 +231,16 @@ function initSocket(server) {
       try {
         const messageService = require('../modules/messages/message.service');
         
+        // Derive user from socket (do not trust client-supplied userId/userType)
         await messageService.markMessagesAsReadService(
           data.conversationId,
-          data.userId,
-          data.userType
+          socket.user.id
         );
 
         // Notify other user that messages were read
         socket.to(`conversation_${data.conversationId}`).emit('messages_read', {
           conversationId: data.conversationId,
-          readBy: data.userId
+          readBy: socket.user.id
         });
 
         console.log(`✅ [SOCKET] Messages marked as read in conversation ${data.conversationId}`);

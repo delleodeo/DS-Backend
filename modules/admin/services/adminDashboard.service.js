@@ -25,9 +25,25 @@ const CACHE_TTL = 300; // 5 minutes
 class AuditService {
   static async log(adminId, adminEmail, action, targetType, targetId, details = {}, req = null) {
     try {
+      // Resolve adminEmail if not provided
+      let resolvedEmail = adminEmail;
+      if (!resolvedEmail && adminId) {
+        try {
+          const user = await User.findById(adminId).select('email');
+          resolvedEmail = user?.email;
+        } catch (err) {
+          // ignore lookup errors and fall back
+        }
+      }
+
+      // Ensure we always have a non-empty adminEmail to satisfy schema
+      if (!resolvedEmail) {
+        resolvedEmail = String(adminId) || 'unknown';
+      }
+
       const logEntry = new AuditLog({
         adminId,
-        adminEmail,
+        adminEmail: resolvedEmail,
         action,
         targetType,
         targetId,
@@ -324,7 +340,7 @@ class SellerManagementService {
             cancelledOrders,
             cancellationRate: orders.length ? ((cancelledOrders / orders.length) * 100).toFixed(2) : 0,
             totalRevenue,
-            averageRating: (vendor.rating / vendor.numRatings).toFixed(2) || 8
+            averageRating: vendor && vendor.numRatings > 0 ? parseFloat((vendor.rating / vendor.numRatings).toFixed(2)) : 0
           }
         };
       } catch (error) {
@@ -677,7 +693,7 @@ class ProductManagementService {
 
     // Clear product cache
     if (isRedisAvailable()) {
-      const CacheUtils = require('../../products/cacheUtils');
+      const CacheUtils = require('../../products/product-utils/cacheUtils');
       const cache = new CacheUtils(redisClient);
       await cache.deletePattern('products:*');
     }
@@ -702,7 +718,7 @@ class ProductManagementService {
 
     // Clear product cache
     if (isRedisAvailable()) {
-      const CacheUtils = require('../../products/cacheUtils');
+      const CacheUtils = require('../../products/product-utils/cacheUtils');
       const cache = new CacheUtils(redisClient);
       await cache.deletePattern('products:*');
     }
@@ -723,7 +739,7 @@ class ProductManagementService {
 
     // Clear product cache
     if (isRedisAvailable()) {
-      const CacheUtils = require('../../products/cacheUtils');
+      const CacheUtils = require('../../products/product-utils/cacheUtils');
       const cache = new CacheUtils(redisClient);
       await cache.deletePattern('products:*');
     }
@@ -746,7 +762,7 @@ class ProductManagementService {
 
     // Clear product cache
     if (isRedisAvailable()) {
-      const CacheUtils = require('../../products/cacheUtils');
+      const CacheUtils = require('../../products/product-utils/cacheUtils');
       const cache = new CacheUtils(redisClient);
       await cache.deletePattern('products:*');
     }

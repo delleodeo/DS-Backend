@@ -666,14 +666,20 @@ exports.createBanner = async (req, res) => {
     // Debug: Log what we receive
     console.log('Create Banner - req.body:', req.body);
     console.log('Create Banner - req.files:', req.files);
+    console.log('Create Banner - Has image field?:', req.files && req.files.image);
+    console.log('Create Banner - Image array?:', req.files && req.files.image && req.files.image[0]);
     
     // Handle file upload - with .fields() we get req.files object
     const bannerData = { ...req.body };
     
     // Handle background image
     if (req.files && req.files.image && req.files.image[0]) {
+      console.log('Create Banner - Image uploaded:', req.files.image[0]);
       bannerData.imageUrl = req.files.image[0].path; // Cloudinary URL
       bannerData.imagePublicId = req.files.image[0].filename; // Cloudinary public_id
+      console.log('Create Banner - Set imageUrl:', bannerData.imageUrl);
+    } else {
+      console.log('Create Banner - NO IMAGE UPLOADED in req.files');
     }
     
     // Handle product image

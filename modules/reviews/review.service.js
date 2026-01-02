@@ -31,7 +31,7 @@ const updateProductRating = async (productId) => {
       const { safeDel } = require('../../config/redis');
       await safeDel(`product:${productId}`);
       // Use pattern delete for wildcard product cache
-      const CacheUtils = require('../products/cacheUtils');
+      const CacheUtils = require('../products/product-utils/cacheUtils');
       const cache = new CacheUtils(redisClient);
       await cache.deletePattern('products:*');
     }
