@@ -4,6 +4,8 @@
  */
 
 const EscrowService = require('../services/escrow.service');
+const sanitizeMongoInput = require('../../../utils/sanitizeMongoInput');
+const { validateId } = require('../../../utils/validation');
 
 // ============================================
 // ESCROW DASHBOARD
@@ -88,13 +90,13 @@ exports.getSellersWithPendingReleases = async (req, res) => {
  */
 exports.releasePayment = async (req, res) => {
   try {
-    const { releaseId } = req.params;
+    const { orderId } = req.params;
     const { notes } = req.body;
     const adminId = req.user._id;
     const adminEmail = req.user.email;
     
     const result = await EscrowService.releasePaymentToSeller(
-      releaseId,
+      orderId,
       adminId,
       adminEmail,
       notes,
@@ -170,7 +172,7 @@ exports.bulkReleasePayments = async (req, res) => {
  */
 exports.holdPayment = async (req, res) => {
   try {
-    const { releaseId } = req.params;
+    const { orderId } = req.params;
     const { reason } = req.body;
     const adminId = req.user._id;
     const adminEmail = req.user.email;
@@ -183,7 +185,7 @@ exports.holdPayment = async (req, res) => {
     }
     
     const result = await EscrowService.holdPayment(
-      releaseId,
+      orderId,
       adminId,
       adminEmail,
       reason,
@@ -287,8 +289,19 @@ exports.rejectRefund = async (req, res) => {
 exports.requestRefund = async (req, res) => {
   try {
     const { orderId } = req.params;
-    const { reason, reasonDetails } = req.body;
-    const customerId = req.user._id;
+    // Sanitize and validate inputs
+    validateId(String(orderId), 'orderId');
+    const sanitizedBody = sanitizeMongoInput(req.body);
+    const { reason, reasonDetails } = sanitizedBody;
+    // Handle both id and _id since JWT might use either format
+    const customerId = req.user._id || req.user.id;
+    
+    if (!customerId) {
+      return res.status(401).json({ 
+        success: false, 
+        error: 'User authentication required' 
+      });
+    }
     
     if (!reason) {
       return res.status(400).json({ 
@@ -307,6 +320,22 @@ exports.requestRefund = async (req, res) => {
     res.json({ success: true, data: result });
   } catch (error) {
     console.error('Request Refund Error:', error);
+    res.status(400).json({ success: false, error: error.message });
+  }
+};
+
+/**
+ * Customer cancels a pending refund request
+ */
+exports.cancelRefundRequest = async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const customerId = req.user._id || req.user.id;
+
+    const result = await EscrowService.cancelRefundRequest(orderId, customerId);
+    res.json({ success: true, data: result });
+  } catch (error) {
+    console.error('Cancel Refund Request Error:', error);
     res.status(400).json({ success: false, error: error.message });
   }
 };

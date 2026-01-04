@@ -76,6 +76,7 @@ const OrderSchema = new mongoose.Schema({
     ref: "Payment",
   },
   paidAt: Date,
+  deliveredAt: Date, // When order was marked as delivered
   status: {
     type: String,
     enum: [
@@ -99,9 +100,22 @@ const OrderSchema = new mongoose.Schema({
     enum: ["not_applicable", "held", "pending_release", "released", "refunded"],
     default: "not_applicable",
   },
+  escrowAmount: { type: Number, default: 0 },
+  
   escrowHeldAt: { type: Date },
   escrowReleasedAt: { type: Date },
   escrowReleasedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+
+  // 💸 Payout Tracking (funds to seller)
+  payoutStatus: {
+    type: String,
+    enum: ["not_applicable", "pending", "held", "released"],
+    default: "not_applicable",
+  },
+  payoutAmount: { type: Number, default: 0 },
+  payoutReleasedAt: { type: Date },
+  payoutReleasedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+  payoutNotes: { type: String },
 
   // 🔄 Refund Tracking
   refundStatus: {

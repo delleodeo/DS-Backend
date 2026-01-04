@@ -2,6 +2,7 @@
 const express = require('express');
 const router = express.Router();
 const adminController = require('../controllers/adminDashboard.controller');
+const escrowController = require('../controllers/escrow.controller');
 const { protect, restrictTo } = require('../../../auth/auth.controller');
 const { uploadTemp } = require('../../upload/upload.service');
 
@@ -66,6 +67,16 @@ router.get('/commission/summary', adminController.getCommissionSummary);
 router.get('/commission/pending-cod', adminController.getPendingCODCommissions);
 router.post('/commission/:orderId/collect', adminController.collectCODCommission);
 router.post('/commission/:orderId/waive', adminController.waiveCommission);
+
+// ============================================
+// PAYOUT / ESCROW
+// ============================================
+router.get('/escrow/summary', escrowController.getEscrowSummary);
+router.get('/escrow/releases', escrowController.getPendingReleases);
+router.get('/escrow/releases/held', escrowController.getHeldReleases);
+router.get('/escrow/releases/vendors', escrowController.getSellersWithPendingReleases);
+router.post('/escrow/releases/:orderId/release', escrowController.releasePayment);
+router.post('/escrow/releases/:orderId/hold', escrowController.holdPayment);
 
 // ============================================
 // CATEGORIES

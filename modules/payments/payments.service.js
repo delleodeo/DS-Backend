@@ -7,6 +7,7 @@ const paymongoClient = require("../../utils/paymongoClient");
 const logger = require("../../utils/logger");
 const { safeDel, isRedisAvailable } = require("../../config/redis");
 const mongoose = require("mongoose");
+const { clearCartService } = require("../cart/cart.service");
 const {
   ValidationError,
   NotFoundError,
@@ -34,59 +35,9 @@ function generateTrackingNumber() {
 /**
  * Helper function to update vendor revenue - pushes directly to monthlyRevenueComparison
  */
-async function updateVendorRevenue(vendorId, orderAmount) {
-  try {
-    logger.info(`[REVENUE TRACKING] Starting update for vendor: ${vendorId}, amount: ${orderAmount}`);
-    
-    // Try finding vendor by _id first, then by userId
-    let vendor = await Vendor.findById(vendorId);
-    if (!vendor) {
-      vendor = await Vendor.findOne({ userId: vendorId });
-    }
-    
-    if (!vendor) {
-      logger.error(`[REVENUE TRACKING] Vendor not found with ID: ${vendorId}`);
-      return;
-    }
-
-    const currentDate = new Date();
-    const currentYear = currentDate.getFullYear();
-    const monthNames = [
-      "January", "February", "March", "April", "May", "June",
-      "July", "August", "September", "October", "November", "December"
-    ];
-    const currentMonth = monthNames[currentDate.getMonth()];
-
-    // Find if the current year exists in monthlyRevenueComparison
-    const yearIndex = vendor.monthlyRevenueComparison.findIndex(
-      (data) => data.year === currentYear
-    );
-
-    if (yearIndex !== -1) {
-      const previousRevenue = vendor.monthlyRevenueComparison[yearIndex].revenues[currentMonth] || 0;
-      vendor.monthlyRevenueComparison[yearIndex].revenues[currentMonth] = previousRevenue + orderAmount;
-    } else {
-      const newYearData = {
-        year: currentYear,
-        revenues: {
-          January: 0, February: 0, March: 0, April: 0, May: 0, June: 0,
-          July: 0, August: 0, September: 0, October: 0, November: 0, December: 0,
-          [currentMonth]: orderAmount
-        }
-      };
-      vendor.monthlyRevenueComparison.push(newYearData);
-    }
-
-    vendor.currentMonthlyRevenue = (vendor.currentMonthlyRevenue || 0) + orderAmount;
-    vendor.totalRevenue = (vendor.totalRevenue || 0) + orderAmount;
-    vendor.totalOrders = (vendor.totalOrders || 0) + 1;
-
-    await vendor.save();
-    logger.info(`[REVENUE TRACKING] Successfully updated vendor ${vendor.storeName}`);
-  } catch (error) {
-    logger.error(`[REVENUE TRACKING] Error updating vendor revenue:`, error);
-    // Don't throw - revenue tracking shouldn't fail order creation
-  }
+async function updateVendorRevenue(vendorId) {
+  // Revenue is now recalculated when orders are delivered; avoid incrementing on payment creation
+  logger.info(`[REVENUE TRACKING] Skipping revenue update during payment creation for vendor ${vendorId}`);
 }
 
 /**
@@ -1120,6 +1071,18 @@ class PaymentService {
           } catch (cacheErr) {
             logger.warn("Order cache invalidation failed:", cacheErr.message);
           }
+        }
+
+        // Clear the user's cart after successful order creation
+        try {
+          await clearCartService(userId);
+          logger.info("Cart cleared successfully after order creation:", { userId, paymentId });
+        } catch (cartError) {
+          logger.error("Failed to clear cart after order creation (non-critical):", {
+            userId,
+            paymentId,
+            error: cartError.message
+          });
         }
 
         logger.info("Orders created successfully from payment:", {

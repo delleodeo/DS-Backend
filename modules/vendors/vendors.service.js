@@ -207,10 +207,93 @@ exports.getVendorById = async (id) => {
 	);
 	if (!vendor) throw new Error("Vendor not found");
 
+	// Calculate stats on-demand from orders in database
+	const calculatedStats = await exports.calculateVendorStats(id);
+	const vendorData = vendor.toObject();
+	vendorData.totalOrders = calculatedStats.totalOrders;
+	vendorData.totalRevenue = calculatedStats.totalRevenue;
+	vendorData.currentMonthlyRevenue = calculatedStats.currentMonthlyRevenue;
+	vendorData.monthlyRevenueComparison = calculatedStats.monthlyRevenueComparison;
+
 	if (isRedisAvailable()) {
-		await redisClient.set(cacheKey, JSON.stringify(vendor), { EX: 300 });
+		await redisClient.set(cacheKey, JSON.stringify(vendorData), { EX: 300 });
 	}
-	return vendor;
+	return vendorData;
+};
+
+/**
+ * Calculate vendor stats on-demand from orders in database
+ * This ensures data accuracy by not relying on incremental updates
+ * @param {String} vendorId - The vendor's user ID
+ * @returns {Object} Calculated stats from orders
+ */
+exports.calculateVendorStats = async (vendorId) => {
+	try {
+		const MONTH_NAMES = [
+			"January", "February", "March", "April", "May", "June",
+			"July", "August", "September", "October", "November", "December"
+		];
+
+		// Get all delivered/completed orders for this vendor
+		const orders = await Order.find({
+			vendorId: vendorId,
+			status: { $in: ['delivered', 'completed'] }
+		}).select('subTotal createdAt').lean();
+
+		const monthlyMap = new Map();
+		let totalRevenue = 0;
+
+		for (const order of orders) {
+			const gross = order.subTotal || 0;
+			totalRevenue += gross;
+			const d = new Date(order.createdAt);
+			const year = d.getFullYear();
+			const monthName = MONTH_NAMES[d.getMonth()];
+			const key = `${year}:${monthName}`;
+			if (!monthlyMap.has(key)) {
+				monthlyMap.set(key, { year, monthName, total: 0 });
+			}
+			monthlyMap.get(key).total += gross;
+		}
+
+		// Build monthlyRevenueComparison
+		const groupedByYear = {};
+		for (const { year, monthName, total } of monthlyMap.values()) {
+			if (!groupedByYear[year]) {
+				groupedByYear[year] = {
+					year,
+					revenues: {
+						January: 0, February: 0, March: 0, April: 0, May: 0, June: 0,
+						July: 0, August: 0, September: 0, October: 0, November: 0, December: 0
+					}
+				};
+			}
+			groupedByYear[year].revenues[monthName] += total;
+		}
+
+		const monthlyRevenueComparison = Object.values(groupedByYear);
+
+		const now = new Date();
+		const currentMonthName = MONTH_NAMES[now.getMonth()];
+		const currentYear = now.getFullYear();
+		const currentMonthRevenue = monthlyRevenueComparison
+			.find((c) => c.year === currentYear)?.revenues[currentMonthName] || 0;
+
+		return {
+			totalOrders: orders.length,
+			totalRevenue: parseFloat(totalRevenue.toFixed(2)),
+			currentMonthlyRevenue: parseFloat(currentMonthRevenue.toFixed(2)),
+			monthlyRevenueComparison
+		};
+	} catch (error) {
+		console.error("Calculate Vendor Stats Error:", error);
+		return {
+			totalOrders: 0,
+			totalRevenue: 0,
+			currentMonthlyRevenue: 0,
+			monthlyRevenueComparison: []
+		};
+	}
 };
 
 exports.updateVendor = async (id, updates) => {
@@ -437,6 +520,8 @@ exports.batchResetMonthlyRevenue = async () => {
  */
 exports.getVendorFinancials = async (vendorId) => {
 	try {
+		const vendor = (await Vendor.findOne({ userId: vendorId })) || (await Vendor.findById(vendorId));
+		const effectiveCommissionRate = vendor?.commissionRate ?? COMMISSION_RATE;
 		// Get all orders for this vendor that are delivered
 		const orders = await Order.find({
 			vendorId: vendorId,
@@ -450,15 +535,23 @@ exports.getVendorFinancials = async (vendorId) => {
 		let totalNetEarnings = 0;
 		let codPendingCommission = 0;
 		let digitalPaymentCommission = 0;
+		let pendingAdminRelease = 0;
+		let netReleased = 0;
+		let netExpected = 0;
 
 		const orderHistory = [];
 
 		for (const order of orders) {
 			const grossAmount = order.subTotal || 0;
-			const commissionAmount = order.commissionAmount || parseFloat((grossAmount * COMMISSION_RATE).toFixed(2));
+			const orderCommissionRate = order.commissionRate ?? effectiveCommissionRate;
+			const commissionAmount = order.commissionAmount || parseFloat((grossAmount * orderCommissionRate).toFixed(2));
 			const netEarnings = order.sellerEarnings || parseFloat((grossAmount - commissionAmount).toFixed(2));
+			const payoutStatus = order.payoutStatus || 'not_applicable';
+			const escrowStatus = order.escrowStatus || 'not_applicable';
+			const isCod = String(order.paymentMethod || 'cod').toLowerCase() === 'cod';
 
 			totalGrossRevenue += grossAmount;
+			netExpected += netEarnings;
 
 			// Check commission status
 			const commissionStatus = order.commissionStatus || 'pending';
@@ -474,10 +567,24 @@ exports.getVendorFinancials = async (vendorId) => {
 			} else {
 				// For COD pending collection
 				totalCommissionPending += commissionAmount;
-				totalNetEarnings += grossAmount; // Seller has full amount until commission collected
+				totalNetEarnings += netEarnings;
 				
 				if (paymentMethod === 'COD') {
 					codPendingCommission += commissionAmount;
+				}
+			}
+
+			if (!isCod) {
+				if (payoutStatus === 'released' || escrowStatus === 'released') {
+					netReleased += netEarnings;
+				} else {
+					pendingAdminRelease += netEarnings;
+				}
+			} else {
+				if (commissionStatus === 'pending') {
+					// vendor still holds full cash but owes commission
+				} else {
+					netReleased += netEarnings;
 				}
 			}
 
@@ -492,6 +599,7 @@ exports.getVendorFinancials = async (vendorId) => {
 				commissionAmount: commissionAmount,
 				commissionStatus: commissionStatus,
 				netEarnings: netEarnings,
+				payoutStatus: payoutStatus,
 				buyerName: order.shippingAddress?.fullName || 'N/A'
 			});
 		}
@@ -517,7 +625,8 @@ exports.getVendorFinancials = async (vendorId) => {
 			if (orderDate.getFullYear() === currentYear) {
 				const monthName = months[orderDate.getMonth()];
 				const grossAmount = order.subTotal || 0;
-				const commissionAmount = order.commissionAmount || parseFloat((grossAmount * COMMISSION_RATE).toFixed(2));
+				const orderCommissionRate = order.commissionRate ?? effectiveCommissionRate;
+				const commissionAmount = order.commissionAmount || parseFloat((grossAmount * orderCommissionRate).toFixed(2));
 				const commissionStatus = order.commissionStatus || 'pending';
 
 				monthlyBreakdown[monthName].grossRevenue += grossAmount;
@@ -528,7 +637,7 @@ exports.getVendorFinancials = async (vendorId) => {
 					monthlyBreakdown[monthName].netEarnings += (grossAmount - commissionAmount);
 				} else {
 					monthlyBreakdown[monthName].commissionPending += commissionAmount;
-					monthlyBreakdown[monthName].netEarnings += grossAmount;
+					monthlyBreakdown[monthName].netEarnings += (grossAmount - commissionAmount);
 				}
 			}
 		});
@@ -540,9 +649,12 @@ exports.getVendorFinancials = async (vendorId) => {
 				totalCommissionPaid: parseFloat(totalCommissionPaid.toFixed(2)),
 				totalCommissionPending: parseFloat(totalCommissionPending.toFixed(2)),
 				totalNetEarnings: parseFloat(totalNetEarnings.toFixed(2)),
+				netEarningsReleased: parseFloat(netReleased.toFixed(2)),
+				pendingAdminRelease: parseFloat(pendingAdminRelease.toFixed(2)),
+				netEarningsExpected: parseFloat(netExpected.toFixed(2)),
 				codPendingCommission: parseFloat(codPendingCommission.toFixed(2)),
 				digitalPaymentCommission: parseFloat(digitalPaymentCommission.toFixed(2)),
-				commissionRate: COMMISSION_RATE * 100, // 7%
+				commissionRate: (effectiveCommissionRate || COMMISSION_RATE) * 100,
 				totalOrders: orders.length
 			},
 			monthlyBreakdown,
