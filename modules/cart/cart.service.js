@@ -175,6 +175,65 @@ exports.clearCartService = async (userId) => {
 };
 
 /**
+ * Remove specific items from cart (used after checkout to only remove purchased items)
+ * @param {String} userId - User ID
+ * @param {Array} itemsToRemove - Array of items with productId and optionId to remove
+ * @returns {Object} Updated cart
+ */
+exports.removeItemsFromCartService = async (userId, itemsToRemove) => {
+	if (!itemsToRemove || itemsToRemove.length === 0) {
+		console.log("No items to remove from cart");
+		return await exports.getCartService(userId);
+	}
+
+	const cart = await Cart.findOne({ userId });
+	if (!cart) {
+		console.log("Cart not found for user:", userId);
+		return { userId, items: [] };
+	}
+
+	console.log("Removing specific items from cart:", {
+		userId,
+		itemCount: itemsToRemove.length,
+		items: itemsToRemove.map(i => ({ productId: i.productId, optionId: i.optionId }))
+	});
+
+	// Filter out items that match the items to remove
+	cart.items = cart.items.filter((cartItem) => {
+		// Check if this cart item should be removed
+		const shouldRemove = itemsToRemove.some((removeItem) => {
+			const productMatch = String(cartItem.productId) === String(removeItem.productId);
+			const optionMatch = 
+				// Both have no optionId
+				(!cartItem.optionId && !removeItem.optionId) ||
+				// Both have an optionId and they match
+				(cartItem.optionId && removeItem.optionId && 
+				 String(cartItem.optionId) === String(removeItem.optionId));
+			
+			return productMatch && optionMatch;
+		});
+		
+		// Keep items that should NOT be removed
+		return !shouldRemove;
+	});
+
+	cart.updatedAt = new Date();
+	await cart.save();
+
+	if (isRedisAvailable()) {
+		const { safeDel } = require('../../config/redis');
+		await safeDel(getCacheKey(userId));
+	}
+
+	console.log("Cart updated after removing items:", {
+		userId,
+		remainingItems: cart.items.length
+	});
+
+	return cart;
+};
+
+/**
  * Invalidate all cart caches to force fresh data fetch
  * Should be called when promotions are changed/ended
  */

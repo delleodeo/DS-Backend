@@ -7,7 +7,7 @@ const paymongoClient = require("../../utils/paymongoClient");
 const logger = require("../../utils/logger");
 const { safeDel, isRedisAvailable } = require("../../config/redis");
 const mongoose = require("mongoose");
-const { clearCartService } = require("../cart/cart.service");
+const { clearCartService, removeItemsFromCartService } = require("../cart/cart.service");
 const {
   ValidationError,
   NotFoundError,
@@ -1073,12 +1073,22 @@ class PaymentService {
           }
         }
 
-        // Clear the user's cart after successful order creation
+        // Clear the user's cart after successful order creation - ONLY remove checked out items
         try {
-          await clearCartService(userId);
-          logger.info("Cart cleared successfully after order creation:", { userId, paymentId });
+          // Get the items that were checked out from the checkout data
+          const itemsToRemove = checkoutDataObj.items.map(item => ({
+            productId: item.productId,
+            optionId: item.optionId || null
+          }));
+          
+          await removeItemsFromCartService(userId, itemsToRemove);
+          logger.info("Checked out items removed from cart:", { 
+            userId, 
+            paymentId, 
+            removedItemCount: itemsToRemove.length 
+          });
         } catch (cartError) {
-          logger.error("Failed to clear cart after order creation (non-critical):", {
+          logger.error("Failed to remove checked out items from cart (non-critical):", {
             userId,
             paymentId,
             error: cartError.message
