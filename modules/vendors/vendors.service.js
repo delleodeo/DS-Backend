@@ -674,35 +674,49 @@ exports.getVendorFinancials = async (vendorId) => {
  */
 exports.getVendorPendingCODCommissions = async (vendorId) => {
 	try {
-		const orders = await Order.find({
-			vendorId: vendorId,
-			paymentMethod: 'COD',
-			status: { $in: ['delivered', 'completed'] },
-			commissionStatus: { $in: ['pending', null] }
-		}).sort({ createdAt: -1 }).lean();
-
-		const pendingCommissions = orders.map(order => {
-			const grossAmount = order.subTotal || 0;
-			const commissionAmount = order.commissionAmount || parseFloat((grossAmount * COMMISSION_RATE).toFixed(2));
-
-			return {
-				orderId: order._id,
-				orderNumber: order.orderNumber || order._id.toString().slice(-8).toUpperCase(),
-				deliveredDate: order.deliveredAt || order.updatedAt,
-				grossAmount: grossAmount,
-				commissionDue: commissionAmount,
-				buyerName: order.shippingAddress?.fullName || 'N/A',
-				buyerPhone: order.shippingAddress?.phone || 'N/A'
-			};
+		// Convert vendorId to string for consistent comparison
+		const vendorIdStr = vendorId.toString();
+		
+		// Import commission service
+		const commissionService = require('../commissions/commission.service');
+		
+		// Get pending commissions from commission collection
+		const result = await commissionService.getPendingCommissions(vendorIdStr, {
+			page: 1,
+			limit: 100,
+			status: 'pending'
 		});
 
-		const totalPending = pendingCommissions.reduce((sum, o) => sum + o.commissionDue, 0);
+		if (!result || !result.commissions) {
+			return {
+				success: true,
+				totalPendingCommission: 0,
+				pendingOrdersCount: 0,
+				orders: []
+			};
+		}
+
+		// Transform commissions to order format for backward compatibility
+		const orders = result.commissions.map(commission => ({
+			commissionId: commission._id,
+			orderId: commission.order._id,
+			orderNumber: commission.metadata?.orderNumber || commission.order.orderNumber || commission.order._id.toString().slice(-8).toUpperCase(),
+			deliveredDate: commission.metadata?.deliveredAt || new Date(),
+			grossAmount: commission.orderAmount,
+			commissionDue: commission.commissionAmount,
+			commissionRate: commission.commissionRate,
+			dueDate: commission.dueDate,
+			buyerName: commission.metadata?.customerName || 'N/A',
+			buyerPhone: 'N/A'
+		}));
+
+		const totalPending = orders.reduce((sum, o) => sum + o.commissionDue, 0);
 
 		return {
 			success: true,
 			totalPendingCommission: parseFloat(totalPending.toFixed(2)),
-			pendingOrdersCount: pendingCommissions.length,
-			orders: pendingCommissions
+			pendingOrdersCount: orders.length,
+			orders: orders
 		};
 	} catch (error) {
 		console.error("Get Vendor Pending COD Commissions Error:", error);

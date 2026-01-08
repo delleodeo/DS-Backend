@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 
 // Custom ObjectId validator
 const objectId = Joi.string().custom((value, helpers) => {
-  if (!mongoose.Types.ObjectId.isValid(value)) {
+  if (!mongoose.isValidObjectId(value)) {
     return helpers.error('any.invalid');
   }
   return value;

@@ -99,6 +99,32 @@ const commissionSchema = new mongoose.Schema({
     sparse: true
   },
   
+  // Remittance history
+  remittanceHistory: [{
+    remittedAt: {
+      type: Date,
+      default: Date.now
+    },
+    amount: {
+      type: Number,
+      required: true,
+      min: 0
+    },
+    method: {
+      type: String,
+      enum: ['wallet', 'bank_transfer', 'manual'],
+      required: true
+    },
+    walletTransactionId: mongoose.Schema.Types.ObjectId,
+    referenceNumber: String,
+    notes: String,
+    status: {
+      type: String,
+      enum: ['pending', 'completed', 'failed', 'cancelled'],
+      default: 'completed'
+    }
+  }],
+  
   // Reminder tracking
   remindersSent: {
     type: Number,

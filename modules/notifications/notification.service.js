@@ -10,7 +10,7 @@ const mongoose = require('mongoose');
 /**
  * Validate ObjectId
  */
-const isValidObjectId = (id) => mongoose.Types.ObjectId.isValid(id);
+const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 
 /**
  * Create a notification

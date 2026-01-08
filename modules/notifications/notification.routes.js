@@ -7,10 +7,10 @@ const router = express.Router();
 const { param, query } = require('express-validator');
 const notificationController = require('./notification.controller');
 const { protect } = require('../../auth/auth.controller');
-const { createRateLimiter } = require('../../middleware/rateLimiter');
+const rateLimiter = require('../../utils/rateLimiter');
 
 // Rate limiter
-const standardLimiter = createRateLimiter({
+const standardLimiter = rateLimiter({
   windowMs: 15 * 60 * 1000,
   max: 100
 });

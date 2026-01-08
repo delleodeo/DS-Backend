@@ -18,7 +18,7 @@ const {
  * Validate MongoDB ObjectId
  */
 function validateObjectId(id, fieldName) {
-  if (!mongoose.Types.ObjectId.isValid(id)) {
+  if (!mongoose.isValidObjectId(id)) {
     throw new Error(`Invalid ${fieldName}: ${id}`);
   }
 }

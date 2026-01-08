@@ -7,18 +7,20 @@ const router = express.Router();
 const { body, param, query } = require('express-validator');
 const commissionController = require('./commission.controller');
 const { protect, restrictTo } = require('../../auth/auth.controller');
-const { createRateLimiter } = require('../../middleware/rateLimiter');
+const rateLimiter = require('../../utils/rateLimiter');
 
 // Rate limiters
-const standardLimiter = createRateLimiter({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100,
+const standardLimiter = rateLimiter({
+  windowSec: 15 * 60, // 15 minutes
+  maxRequests: 100,
+  keyPrefix: 'commissions-standard',
   message: 'Too many requests, please try again later'
 });
 
-const remitLimiter = createRateLimiter({
-  windowMs: 60 * 60 * 1000, // 1 hour
-  max: 30, // 30 remittance attempts per hour
+const remitLimiter = rateLimiter({
+  windowSec: 60 * 60, // 1 hour
+  maxRequests: 30, // 30 remittance attempts per hour
+  keyPrefix: 'commissions-remit',
   message: 'Too many remittance attempts. Please try again later.'
 });
 
@@ -94,6 +96,19 @@ router.get(
   restrictTo('vendor'),
   standardLimiter,
   commissionController.getCommissionSummary
+);
+
+/**
+ * @route GET /api/v1/commissions/remittance-history
+ * @desc Get remittance history for vendor
+ * @access Private (Vendor only)
+ */
+router.get(
+  '/remittance-history',
+  protect,
+  restrictTo('vendor'),
+  standardLimiter,
+  commissionController.getRemittanceHistory
 );
 
 /**

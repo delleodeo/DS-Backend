@@ -5,12 +5,14 @@
 const commissionService = require('./commission.service');
 const { validationResult } = require('express-validator');
 
+
 /**
  * Get pending commissions for the logged-in vendor
  */
 const getPendingCommissions = async (req, res, next) => {
   try {
-    const vendorId = req.user._id;
+    const vendorId = req.user.id;
+    console.log('Vendor ID:', vendorId);
     const { page = 1, limit = 20, status } = req.query;
     
     const result = await commissionService.getPendingCommissions(vendorId, {
@@ -34,13 +36,36 @@ const getPendingCommissions = async (req, res, next) => {
  */
 const getCommissionSummary = async (req, res, next) => {
   try {
-    const vendorId = req.user._id;
+    const vendorId = req.user.id;
     const summary = await commissionService.getCommissionSummary(vendorId);
     
     res.status(200).json({
       success: true,
       message: 'Commission summary retrieved successfully',
       data: summary
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Get remittance history for vendor
+ */
+const getRemittanceHistory = async (req, res, next) => {
+  try {
+    const vendorId = req.user.id;
+    const { page = 1, limit = 20 } = req.query;
+    
+    const history = await commissionService.getRemittanceHistory(vendorId, {
+      page: parseInt(page),
+      limit: Math.min(parseInt(limit), 100)
+    });
+    
+    res.status(200).json({
+      success: true,
+      message: 'Remittance history retrieved successfully',
+      data: history
     });
   } catch (error) {
     next(error);
@@ -63,12 +88,12 @@ const remitCommission = async (req, res, next) => {
     }
     
     const { commissionId } = req.params;
-    const vendorId = req.user._id;
+    const vendorId = req.user.id;
     
     const result = await commissionService.remitCommissionViaWallet(
       commissionId,
       vendorId,
-      req.user._id
+      req.user.id
     );
     
     res.status(200).json({
@@ -105,7 +130,7 @@ const bulkRemitCommissions = async (req, res, next) => {
     }
     
     const { commissionIds } = req.body;
-    const vendorId = req.user._id;
+    const vendorId = req.user.id;
     
     if (!Array.isArray(commissionIds) || commissionIds.length === 0) {
       return res.status(400).json({
@@ -125,7 +150,7 @@ const bulkRemitCommissions = async (req, res, next) => {
     const results = await commissionService.bulkRemitCommissions(
       commissionIds,
       vendorId,
-      req.user._id
+      req.user.id
     );
     
     res.status(200).json({
@@ -215,7 +240,7 @@ const updateCommissionStatus = async (req, res, next) => {
     const commission = await commissionService.updateCommissionStatus(
       commissionId,
       status,
-      req.user._id,
+      req.user.id,
       notes
     );
     
@@ -420,6 +445,7 @@ const sendReminderToVendor = async (req, res, next) => {
 module.exports = {
   getPendingCommissions,
   getCommissionSummary,
+  getRemittanceHistory,
   remitCommission,
   bulkRemitCommissions,
   getAllCommissions,

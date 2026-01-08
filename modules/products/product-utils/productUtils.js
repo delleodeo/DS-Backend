@@ -94,7 +94,7 @@ function ensureMainImage(product) {
  * @returns {boolean}
  */
 function isValidObjectId(id) {
-  return mongoose.Types.ObjectId.isValid(id);
+  return mongoose.isValidObjectId(id);
 }
 
 /**

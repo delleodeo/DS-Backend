@@ -207,7 +207,7 @@ async function searchProductsService(query, limit = 0, skip = 0) {
  * Get related products using score-based ranking
  */
 async function getRelatedProducts(productId, limit = 6) {
-  if (!mongoose.Types.ObjectId.isValid(productId)) {
+  if (!mongoose.isValidObjectId(productId)) {
     throw createError('Invalid product ID', 400);
   }
 
@@ -264,7 +264,7 @@ async function getRelatedProducts(productId, limit = 6) {
  * Get single product by ID with caching
  */
 async function getProductByIdService(id) {
-  if (!mongoose.Types.ObjectId.isValid(id)) {
+  if (!mongoose.isValidObjectId(id)) {
     throw createError('Invalid product ID', 400);
   }
 
