@@ -68,7 +68,7 @@ const OrderSchema = new mongoose.Schema({
   trackingNumber: String,
   paymentMethod: {
     type: String,
-    enum: ["wallet", "gcash", "cod", "qrph"],
+    enum: ["wallet", "cod", "qrph"],
     required: true,
   },
   paymentId: {

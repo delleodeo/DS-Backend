@@ -9,6 +9,7 @@ const { startMonthlyRevenueCron } = require("./utils/monthlyRevenueCron");
 const { startImageCleanupCron } = require("./utils/imageCleanupCron");
 const { startPromotionExpirationCron } = require("./utils/promotionExpirationCron");
 const { startQRFileCleanupCron } = require("./utils/qrFileCleanupCron");
+const { startCommissionReminderCron } = require("./utils/commissionReminderCron");
 const http = require('http');
 
 resetAllNew();
@@ -43,6 +44,9 @@ const startServer = async () => {
     
     // Start QR file cleanup cron job
     startQRFileCleanupCron();
+
+    // Start commission reminder cron job (daily at 9 AM)
+    startCommissionReminderCron();
 
     // Export server and io for potential use in other modules
     module.exports = { app, server, io };

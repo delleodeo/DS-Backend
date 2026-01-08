@@ -14,6 +14,16 @@ const { ValidationError, NotFoundError, AuthorizationError, ConflictError, Datab
 const { validateId } = require('../../utils/validation');
 const mongoose = require('mongoose');
 
+// Commission service for COD orders
+let commissionService;
+let notificationService;
+try {
+	commissionService = require('../commissions/commission.service');
+	notificationService = require('../notifications/notification.service');
+} catch (e) {
+	console.warn('[Orders] Commission/Notification service not available');
+}
+
 const getUserOrdersKey = (userId) => `orders:user:${userId}`;
 const getVendorOrdersKey = (vendorId) => `orders:vendor:${vendorId}`;
 const getProductOrdersKey = (productId) => `orders:product:${productId}`;
@@ -480,6 +490,38 @@ exports.updateOrderStatusService = async (
 			// COD: vendor already collected cash; commission still pending
 			order.escrowStatus = "not_applicable";
 			order.payoutStatus = "not_applicable";
+			
+			// Create pending commission record for COD orders
+			if (commissionService) {
+				try {
+					// Get shop info for the commission
+					const vendor = await Vendor.findOne({ userId: order.vendorId });
+					if (vendor) {
+						const commission = await commissionService.createCODCommission(
+							{
+								orderId: order._id,
+								orderNumber: order.orderNumber || order._id.toString(),
+								amount: orderTotal,
+								commissionRate: commissionRate * 100, // Convert to percentage
+								customerName: order.customerName || order.shippingAddress?.name || 'Customer',
+								deliveredAt: new Date()
+							},
+							order.vendorId,
+							vendor._id
+						);
+						
+						// Send notification to vendor about pending commission
+						if (notificationService && commission) {
+							await notificationService.notifyCommissionPending(order.vendorId, commission);
+						}
+						
+						console.log(`✅ [COD COMMISSION] Created pending commission for order ${order._id}, amount: ${order.commissionAmount}`);
+					}
+				} catch (commErr) {
+					console.error(`❌ [COD COMMISSION] Failed to create commission for order ${order._id}:`, commErr.message);
+					// Don't fail the order update if commission creation fails
+				}
+			}
 		}
 
 		// Update stock and sold counts for each item in the order
