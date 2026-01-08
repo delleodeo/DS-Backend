@@ -92,7 +92,9 @@ exports.updateOrderStatus = asyncHandler(async (req, res) => {
 exports.cancelOrder = asyncHandler(async (req, res) => {
 	const { id } = req.params;
 	validateId(String(id), 'orderId');
-	const order = await cancelOrderService(id);
+	// Pass the customer ID for auto-refund creation
+	const customerId = req.user?._id || req.user?.id;
+	const order = await cancelOrderService(id, customerId);
 	if (!order) throw new ValidationError('Order not found');
 	res.json(order);
 });

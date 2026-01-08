@@ -14,10 +14,16 @@ const {
   Category,
   UserActivityLog
 } = require('../models');
-const { getRedisClient, isRedisAvailable } = require('../../../config/redis');
+const { getRedisClient, isRedisAvailable, safeDel } = require('../../../config/redis');
 
 const redisClient = getRedisClient();
 const CACHE_TTL = 300; // 5 minutes
+
+// Cache key helpers (aligned with orders.service)
+const getUserOrdersKey = (userId) => `orders:user:${userId}`;
+const getVendorOrdersKey = (vendorId) => `orders:vendor:${vendorId}`;
+const getProductOrdersKey = (productId) => `orders:product:${productId}`;
+const getOrderKey = (id) => `orders:${id}`;
 
 // ============================================
 // AUDIT LOGGING SERVICE
@@ -1040,6 +1046,20 @@ class OrderCommissionService {
 // ============================================
 class AnalyticsService {
   static async getDashboardStats() {
+    // Try cache first for performance
+    const cacheKey = 'adminDashboardStats';
+    if (isRedisAvailable()) {
+      try {
+        const cached = await redisClient.get(cacheKey);
+        if (cached) {
+          console.log('📦 [CACHE HIT] Admin dashboard stats from cache');
+          return JSON.parse(cached);
+        }
+      } catch (cacheErr) {
+        console.warn('Cache read failed:', cacheErr.message);
+      }
+    }
+
     const now = new Date();
     const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const startOfWeek = new Date(startOfToday);
@@ -1073,11 +1093,11 @@ class AnalyticsService {
       Order.countDocuments({ createdAt: { $gte: startOfToday } }),
       Order.countDocuments({ createdAt: { $gte: startOfWeek } }),
       Order.countDocuments({ createdAt: { $gte: startOfMonth } }),
-      Order.find({ status: 'delivered' }).select('subTotal createdAt'),
+      Order.find({ status: 'delivered' }).select('subTotal createdAt').lean(),
       RefundRequest ? RefundRequest.countDocuments({ status: 'pending' }).catch(() => 0) : 0,
-      Order.find().sort({ createdAt: -1 }).limit(5).populate('customerId', 'name email').select('orderId status totalAmount createdAt'),
-      User.find().sort({ createdAt: -1 }).limit(5).select('name email role createdAt'),
-      Order.find({ status: { $in: ['pending', 'processing', 'shipped'] } }).select('subTotal')
+      Order.find().sort({ createdAt: -1 }).limit(5).populate('customerId', 'name email').select('orderId status totalAmount createdAt').lean(),
+      User.find().sort({ createdAt: -1 }).limit(5).select('name email role createdAt').lean(),
+      Order.find({ status: { $in: ['pending', 'processing', 'shipped'] } }).select('subTotal').lean()
     ]);
 
     const totalRevenue = completedOrders.reduce((sum, o) => sum + (o.subTotal || 0), 0);
@@ -1114,7 +1134,7 @@ class AnalyticsService {
       createdAt: user.createdAt
     }));
 
-    return {
+    const result = {
       users: { total: totalUsers, sellers: totalSellers },
       products: { total: totalProducts, approved: approvedProducts, pendingApproval: pendingProducts },
       orders: { 
@@ -1140,6 +1160,18 @@ class AnalyticsService {
       recentOrders,
       recentUsers
     };
+
+    // Cache the result for 2 minutes (shorter TTL for dashboard data freshness)
+    if (isRedisAvailable()) {
+      try {
+        await redisClient.set(cacheKey, JSON.stringify(result), { EX: 120 });
+        console.log('📦 [CACHE SET] Admin dashboard stats cached for 2 minutes');
+      } catch (cacheErr) {
+        console.warn('Cache write failed:', cacheErr.message);
+      }
+    }
+
+    return result;
   }
 
   static async getTopSellingProducts(limit = 10) {
@@ -1536,6 +1568,27 @@ class RefundService {
       throw new Error('Refund request cannot be approved in current status');
     }
 
+    // Sync order state so customers see the approved status
+    const order = await Order.findById(refund.orderId);
+    if (order) {
+      order.refundStatus = 'approved';
+      order.refundApprovedAt = new Date();
+      await order.save();
+
+      // Invalidate caches so customers see updated status immediately
+      if (isRedisAvailable()) {
+        const productKeys = order.items?.map((item) =>
+          getProductOrdersKey(item.orderProductId || item.productId)
+        ) || [];
+        await safeDel([
+          getOrderKey(order._id),
+          getUserOrdersKey(order.customerId),
+          getVendorOrdersKey(order.vendorId),
+          ...productKeys,
+        ]);
+      }
+    }
+
     refund.status = 'approved';
     refund.reviewedBy = adminId;
     refund.reviewedAt = new Date();
@@ -1560,6 +1613,28 @@ class RefundService {
     if (!refund) throw new Error('Refund request not found');
     if (refund.status !== 'pending' && refund.status !== 'under_review') {
       throw new Error('Refund request cannot be rejected in current status');
+    }
+
+    const order = await Order.findById(refund.orderId);
+    if (order) {
+      order.refundStatus = 'rejected';
+      order.refundNotes = reason;
+      // Reset order status back to delivered since refund was rejected
+      order.status = 'delivered';
+      await order.save();
+
+      // Invalidate caches so customers see updated status immediately
+      if (isRedisAvailable()) {
+        const productKeys = order.items?.map((item) =>
+          getProductOrdersKey(item.orderProductId || item.productId)
+        ) || [];
+        await safeDel([
+          getOrderKey(order._id),
+          getUserOrdersKey(order.customerId),
+          getVendorOrdersKey(order.vendorId),
+          ...productKeys,
+        ]);
+      }
     }
 
     refund.status = 'rejected';
@@ -1593,6 +1668,27 @@ class RefundService {
     if (customer && refund.refundMethod === 'wallet') {
       customer.wallet.cash += refund.totalRefundAmount;
       await customer.save();
+    }
+
+    // Update order so customer UI reflects processed state
+    const order = await Order.findById(refund.orderId);
+    if (order) {
+      order.refundStatus = 'processed';
+      order.refundProcessedAt = new Date();
+      await order.save();
+
+      // Invalidate caches so customers see updated status immediately
+      if (isRedisAvailable()) {
+        const productKeys = order.items?.map((item) =>
+          getProductOrdersKey(item.orderProductId || item.productId)
+        ) || [];
+        await safeDel([
+          getOrderKey(order._id),
+          getUserOrdersKey(order.customerId),
+          getVendorOrdersKey(order.vendorId),
+          ...productKeys,
+        ]);
+      }
     }
 
     refund.status = 'processed';

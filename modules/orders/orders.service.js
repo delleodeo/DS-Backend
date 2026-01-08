@@ -5,6 +5,7 @@ const {
 } = require("../../config/redis");
 const redisClient = getRedisClient();
 const Admin = require("../admin/admin.model.js");
+const { RefundRequest } = require("../admin/models");
 const { emitAgreementMessage } = require("../../config/socket");
 const Product = require("../products/products.model");
 const Vendor = require("../vendors/vendors.model");
@@ -13,105 +14,107 @@ const { ValidationError, NotFoundError, AuthorizationError, ConflictError, Datab
 const { validateId } = require('../../utils/validation');
 const mongoose = require('mongoose');
 
+// Commission service for COD orders
+let commissionService;
+let notificationService;
+try {
+	commissionService = require('../commissions/commission.service');
+	notificationService = require('../notifications/notification.service');
+} catch (e) {
+	console.warn('[Orders] Commission/Notification service not available');
+}
+
 const getUserOrdersKey = (userId) => `orders:user:${userId}`;
 const getVendorOrdersKey = (vendorId) => `orders:vendor:${vendorId}`;
 const getProductOrdersKey = (productId) => `orders:product:${productId}`;
 const getOrderKey = (id) => `orders:${id}`;
+const DEFAULT_COMMISSION_RATE = 0.07;
+const FINANCIAL_STATUSES = ["delivered", "completed", "released"];
+const MONTH_NAMES = [
+	"January", "February", "March", "April", "May", "June",
+	"July", "August", "September", "October", "November", "December"
+];
 
-// Helper function to update vendor revenue - pushes directly to monthlyRevenueComparison
-const updateVendorRevenue = async (vendorId, orderAmount) => {
+const resolveCommissionRate = async (vendorId) => {
+	if (!vendorId) return DEFAULT_COMMISSION_RATE;
+	const vendor = (await Vendor.findById(vendorId)) || (await Vendor.findOne({ userId: vendorId }));
+	if (!vendor) return DEFAULT_COMMISSION_RATE;
+	return typeof vendor.commissionRate === 'number' ? vendor.commissionRate : DEFAULT_COMMISSION_RATE;
+};
+
+// Helper function to update vendor revenue snapshot from delivered/completed orders (idempotent)
+const updateVendorRevenue = async (vendorId) => {
 	try {
-		console.log(`\n🔵 [REVENUE TRACKING] Starting update for vendor: ${vendorId}, amount: ${orderAmount}`);
-		
-		// Try finding vendor by _id first, then by userId
 		let vendor = await Vendor.findById(vendorId);
 		if (!vendor) {
 			vendor = await Vendor.findOne({ userId: vendorId });
 		}
-		
+
 		if (!vendor) {
 			console.error(`❌ [REVENUE TRACKING] Vendor not found with ID: ${vendorId}`);
 			return;
 		}
 
-		console.log(`✅ [REVENUE TRACKING] Vendor found: ${vendor.storeName} (ID: ${vendor._id})`);
+		const orders = await Order.find({
+			vendorId: vendor.userId,
+			status: { $in: FINANCIAL_STATUSES }
+		}).select('subTotal createdAt');
 
-		const currentDate = new Date();
-		const currentYear = currentDate.getFullYear();
-		const monthNames = [
-			"January", "February", "March", "April", "May", "June",
-			"July", "August", "September", "October", "November", "December"
-		];
-		const currentMonth = monthNames[currentDate.getMonth()];
+		const monthlyMap = new Map();
+		let totalRevenue = 0;
 
-		console.log(`📅 [REVENUE TRACKING] Current date: ${currentMonth} ${currentYear}`);
-
-		// Find if the current year exists in monthlyRevenueComparison
-		const yearIndex = vendor.monthlyRevenueComparison.findIndex(
-			(data) => data.year === currentYear
-		);
-
-		let previousRevenue = 0;
-		if (yearIndex !== -1) {
-			// Year exists, add to the current month's revenue
-			previousRevenue = vendor.monthlyRevenueComparison[yearIndex].revenues[currentMonth] || 0;
-			vendor.monthlyRevenueComparison[yearIndex].revenues[currentMonth] = previousRevenue + orderAmount;
-			console.log(`📊 [REVENUE TRACKING] Updated existing year ${currentYear}: ${currentMonth} ${previousRevenue} → ${vendor.monthlyRevenueComparison[yearIndex].revenues[currentMonth]}`);
-		} else {
-			// Year doesn't exist, create new year entry
-			const newYearData = {
-				year: currentYear,
-				revenues: {
-					January: 0,
-					February: 0,
-					March: 0,
-					April: 0,
-					May: 0,
-					June: 0,
-					July: 0,
-					August: 0,
-					September: 0,
-					October: 0,
-					November: 0,
-					December: 0,
-					[currentMonth]: orderAmount
-				}
-			};
-			vendor.monthlyRevenueComparison.push(newYearData);
-			console.log(`📊 [REVENUE TRACKING] Created new year ${currentYear}: ${currentMonth} = ${orderAmount}`);
+		for (const order of orders) {
+			const gross = order.subTotal || 0;
+			totalRevenue += gross;
+			const d = new Date(order.createdAt);
+			const year = d.getFullYear();
+			const monthName = MONTH_NAMES[d.getMonth()];
+			const key = `${year}:${monthName}`;
+			if (!monthlyMap.has(key)) {
+				monthlyMap.set(key, { year, monthName, total: 0 });
+			}
+			monthlyMap.get(key).total += gross;
 		}
 
-		// Update current month revenue (for reference)
-		const oldCurrentMonthly = vendor.currentMonthlyRevenue || 0;
-		vendor.currentMonthlyRevenue = oldCurrentMonthly + orderAmount;
-		
-		// Update total revenue
-		const oldTotalRevenue = vendor.totalRevenue || 0;
-		vendor.totalRevenue = oldTotalRevenue + orderAmount;
-		
-		// Update total orders count
-		const oldTotalOrders = vendor.totalOrders || 0;
-		vendor.totalOrders = oldTotalOrders + 1;
+		// rebuild monthlyRevenueComparison
+		const comparison = [];
+		const groupedByYear = {};
+		for (const { year, monthName, total } of monthlyMap.values()) {
+			if (!groupedByYear[year]) {
+				groupedByYear[year] = {
+					year,
+					revenues: {
+						January: 0, February: 0, March: 0, April: 0, May: 0, June: 0,
+						July: 0, August: 0, September: 0, October: 0, November: 0, December: 0
+					}
+				};
+			}
+			groupedByYear[year].revenues[monthName] += total;
+		}
+		Object.values(groupedByYear).forEach((entry) => comparison.push(entry));
 
-		console.log(`💰 [REVENUE TRACKING] Stats update:
-		   - Current Monthly: ${oldCurrentMonthly} → ${vendor.currentMonthlyRevenue}
-		   - Total Revenue: ${oldTotalRevenue} → ${vendor.totalRevenue}
-		   - Total Orders: ${oldTotalOrders} → ${vendor.totalOrders}`);
+		const now = new Date();
+		const currentMonthName = MONTH_NAMES[now.getMonth()];
+		const currentYear = now.getFullYear();
+		const currentMonthRevenue = comparison
+			.find((c) => c.year === currentYear)?.revenues[currentMonthName] || 0;
+
+		vendor.monthlyRevenueComparison = comparison;
+		vendor.currentMonthlyRevenue = currentMonthRevenue;
+		vendor.totalRevenue = totalRevenue;
+		vendor.totalOrders = orders.length;
 
 		await vendor.save();
 
-		// Clear vendor cache
 		if (isRedisAvailable()) {
 			const { safeDel } = require('../../config/redis');
 			await safeDel(`vendor:${vendorId}`);
 			await safeDel(`vendor:${vendor._id}`);
 		}
-		console.log(`✅ [REVENUE TRACKING] Successfully saved! Revenue added: +${orderAmount} to ${currentMonth} ${currentYear}`);
-		console.log(`📈 [REVENUE TRACKING] monthlyRevenueComparison updated for vendor ${vendor.storeName}\n`);
+
+		console.log(`✅ [REVENUE TRACKING] Snapshot rebuilt for vendor ${vendor.storeName}`);
 	} catch (error) {
 		console.error(`❌ [REVENUE TRACKING] Error updating vendor revenue:`, error.message);
-		console.error(error.stack);
-		// Don't throw error to prevent order completion failure
 	}
 };
 
@@ -244,27 +247,92 @@ exports.getOrderByIdService = async (orderId) => {
 	return order;
 };
 
-// CANCEL ORDER (WITH CACHE INVALIDATION)
-exports.cancelOrderService = async (orderId) => {
+// CANCEL ORDER (WITH CACHE INVALIDATION AND AUTO-REFUND FOR PAID ORDERS)
+exports.cancelOrderService = async (orderId, customerId = null) => {
 	orderId = sanitizeMongoInput(orderId);
 	validateId(String(orderId), 'orderId');
+	
+	// First get the order to check payment status
+	const order = await Order.findById(orderId);
+	if (!order) return null;
+	
+	// Check if order was already paid with non-COD method
+	const wasPaidOnline = order.paymentStatus?.toLowerCase() === 'paid' && 
+		order.paymentMethod && order.paymentMethod.toLowerCase() !== 'cod';
+	
+	// Update order status to cancelled
 	const updated = await Order.findByIdAndUpdate(
 		orderId,
-		{ status: "cancelled" },
+		{ 
+			status: "cancelled",
+			cancelledAt: new Date(),
+			cancelledBy: customerId || order.customerId
+		},
 		{ new: true }
-	).lean();
+	);
 
 	if (!updated) return null;
 
 	await Admin.updateOne({}, { $inc: { canceledOrdersCount: 1 } });
 
+	// If order was paid online, automatically create a refund request
+	if (wasPaidOnline) {
+		try {
+			const refundItems = updated.items.map(item => ({
+				orderItemId: item._id,
+				productId: item.productId,
+				productName: item.name || item.label,
+				optionId: item.optionId,
+				quantity: item.quantity,
+				price: item.price,
+				refundAmount: item.price * item.quantity
+			}));
+
+			const totalRefundAmount = updated.subTotal || refundItems.reduce((sum, i) => sum + i.refundAmount, 0);
+
+			const refundRequest = new RefundRequest({
+				orderId: updated._id,
+				customerId: updated.customerId,
+				vendorId: updated.vendorId,
+				items: refundItems,
+				totalRefundAmount,
+				commissionRefund: updated.commissionAmount || 0,
+				sellerDeduction: updated.sellerEarnings || 0,
+				reason: 'duplicate_order', // Default reason for cancellation
+				reasonDetails: 'Order cancelled by customer - automatic refund request',
+				status: 'pending',
+				refundMethod: 'wallet',
+				timeline: [{
+					status: 'pending',
+					message: 'Automatic refund request created due to order cancellation',
+					updatedBy: customerId || updated.customerId
+				}]
+			});
+
+			await refundRequest.save();
+
+			// Update order with refund status
+			await Order.findByIdAndUpdate(orderId, {
+				refundStatus: 'requested',
+				refundReason: 'Order cancelled - automatic refund',
+				refundRequestedAt: new Date(),
+				refundRequestedBy: customerId || updated.customerId
+			});
+
+			console.log(`✅ Auto-refund request created for cancelled paid order: ${orderId}`);
+		} catch (refundError) {
+			console.error(`❌ Failed to create auto-refund for order ${orderId}:`, refundError.message);
+			// Don't fail the cancellation if refund creation fails
+		}
+	}
+
 	if (isRedisAvailable()) {
 		const { safeDel } = require('../../config/redis');
 		await Promise.all([
-			redisClient.set(getOrderKey(orderId), JSON.stringify(updated)).catch(() => {}),
+			safeDel(getOrderKey(orderId)),
 			safeDel(getUserOrdersKey(updated.userId || updated.customerId)),
 			safeDel(getVendorOrdersKey(updated.vendorId)),
-			...updated.items.map((item) => safeDel(getProductOrdersKey(item.orderProductId))),
+			...updated.items.map((item) => safeDel(getProductOrdersKey(item.orderProductId || item.productId))),
 		]);
 	}
 
@@ -393,14 +461,68 @@ exports.updateOrderStatusService = async (
 		order.trackingNumber = trackingNumber;
 	}
 	if (newStatus === "delivered") {
-		// Calculate total amount (subTotal + shippingFee)
 		const orderTotal = order.subTotal || 0;
-		
+		const isCod = String(order.paymentMethod || "cod").toLowerCase() === "cod";
+		const commissionRate = await resolveCommissionRate(order.vendorId);
+		order.commissionRate = commissionRate;
+		order.commissionAmount = parseFloat((orderTotal * commissionRate).toFixed(2));
+		order.sellerEarnings = parseFloat((orderTotal - order.commissionAmount).toFixed(2));
+		order.deliveredAt = new Date(); // Track delivery time for refund window
+
 		console.log(`\n📦 [ORDER DELIVERED] Order ${order._id} marked as delivered`);
 		console.log(`   Vendor ID: ${order.vendorId}`);
 		console.log(`   SubTotal: ${order.subTotal}, Shipping: ${order.shippingFee}, Total: ${orderTotal}`);
 		
 		order.paymentStatus = "Paid"; // auto-mark COD as paid when delivered
+
+		if (!isCod) {
+			// digital payments are held until admin release
+			order.escrowStatus = "pending_release";
+			order.payoutStatus = "pending";
+			order.escrowHeldAt = order.escrowHeldAt || new Date();
+			order.payoutAmount = order.sellerEarnings;
+			order.escrowAmount = order.sellerEarnings;
+			if (order.commissionStatus === "pending") {
+				order.commissionStatus = "paid";
+				order.commissionPaidAt = new Date();
+			}
+		} else {
+			// COD: vendor already collected cash; commission still pending
+			order.escrowStatus = "not_applicable";
+			order.payoutStatus = "not_applicable";
+			
+			// Create pending commission record for COD orders
+			if (commissionService) {
+				try {
+					// Get shop info for the commission
+					const vendor = await Vendor.findOne({ userId: order.vendorId });
+					if (vendor) {
+						const commission = await commissionService.createCODCommission(
+							{
+								orderId: order._id,
+								orderNumber: order.orderNumber || order._id.toString(),
+								amount: orderTotal,
+								commissionRate: commissionRate * 100, // Convert to percentage
+								customerName: order.customerName || order.shippingAddress?.name || 'Customer',
+								deliveredAt: new Date()
+							},
+							order.vendorId,
+							vendor._id
+						);
+						
+						// Send notification to vendor about pending commission
+						if (notificationService && commission) {
+							await notificationService.notifyCommissionPending(order.vendorId, commission);
+						}
+						
+						console.log(`✅ [COD COMMISSION] Created pending commission for order ${order._id}, amount: ${order.commissionAmount}`);
+					}
+				} catch (commErr) {
+					console.error(`❌ [COD COMMISSION] Failed to create commission for order ${order._id}:`, commErr.message);
+					// Don't fail the order update if commission creation fails
+				}
+			}
+		}
 
 		// Update stock and sold counts for each item in the order
 		for (const item of order.items) {
@@ -412,14 +534,9 @@ exports.updateOrderStatusService = async (
 			}
 		}
 
-		// Update vendor revenue when order is delivered
-		if (order.vendorId && orderTotal > 0) {
-			console.log(`🚀 [ORDER DELIVERED] Triggering revenue update...`);
-			await updateVendorRevenue(order.vendorId, orderTotal);
-		} else {
-			console.warn(`⚠️ [ORDER DELIVERED] Missing vendorId or total - Revenue not updated!`);
-			console.warn(`   vendorId: ${order.vendorId}, orderTotal: ${orderTotal}`);
-		}
+		// Note: Vendor stats (totalRevenue, monthlyRevenueComparison) are now calculated
+		// on-demand from orders in the database for accuracy. No incremental updates.
+		console.log(`✅ [ORDER DELIVERED] Order marked delivered. Vendor stats will be calculated on-demand.`);
 	}
 	if (newStatus === "paid") {
 		order.paymentStatus = "Paid";

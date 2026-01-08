@@ -18,6 +18,9 @@ const sellerApplicationRoutes = require("./sellerApplication.routes");
 const paymentRoutes = require("../modules/payments/payments.routes");
 const locationRoutes = require("./location.routes");
 const shopsRoutes = require("./shops.routes");
+const commissionRoutes = require("../modules/commissions/commission.routes");
+const notificationRoutes = require("../modules/notifications/notification.routes");
+const walletRoutes = require("../modules/wallet/wallet.routes");
 
 // Import Banner model for public banner endpoint
 const Banner = require("../modules/admin/models/banner.model");
@@ -111,5 +114,8 @@ router.use("/api/seller", sellerApplicationRoutes);
 router.use("/locations", locationRoutes);
 router.use("/payments", paymentRoutes);
 router.use("/api/shops", shopsRoutes);
+router.use("/commissions", commissionRoutes);
+router.use("/notifications", notificationRoutes);
+router.use("/wallet", walletRoutes);
 
 module.exports = router;

@@ -111,7 +111,7 @@ const SystemSettingsSchema = new mongoose.Schema({
     promotionsEnabled: { type: Boolean, default: true },
     customerAgreementShippingEnabled: { type: Boolean, default: true },
     walletEnabled: { type: Boolean, default: true },
-    gcashEnabled: { type: Boolean, default: true },
+    gcashEnabled: { type: Boolean, default: false },
     codEnabled: { type: Boolean, default: true }
   },
   
