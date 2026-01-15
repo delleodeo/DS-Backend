@@ -30,28 +30,49 @@ app.use(
   })
 );
 
+const allowedOrigins = [
+  "https://darylbacongco.me",
+  "http://127.0.0.1:5500",
+  "http://localhost:3000",
+  "http://localhost:3001",
+  "http://localhost:3002",
+  "http://localhost:5173",
+  "http://192.168.1.8:3002",
+  "http://165.22.109.100",
+  "http://165.22.109.100:3002",
+  "http://localhost:4173",
+];
+
 // middleware
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 app.use(rateLimiter({ windowSec: 60, maxRequests: 1500, keyPrefix: "global" }));
 app.use(createSession);
+
 app.use(
   cors({
-    origin: [
-      "https://darylbacongco.me",
-      "http://127.0.0.1:5500",
-      "http://localhost:3000",
-      "http://localhost:3001", // Add this for the 404 error fix
-      "http://localhost:3002",
-      "http://localhost:5173",
-      "http://192.168.1.8:3002",
-      "http://165.22.109.100",
-      "http://165.22.109.100:3002",
-      "http://localhost:4173", // Add Vite preview
-    ], // your actual frontend domain
-    credentials: true, // VERY IMPORTANT — allows cookies
+    origin: function (origin, callback) {
+      if (!origin) return callback(null, true);
+
+      if (allowedOrigins.indexOf(origin) !== -1) {
+        callback(null, true);
+      } else {
+        callback(new Error("Not allowed by CORS: " + origin));
+      }
+    },
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "X-Requested-With",
+      "Accept",
+      "Origin",
+    ],
   })
 );
+
+app.options("*", cors());
 
 app.use(cookieParser());
 app.use(passport.initialize());
