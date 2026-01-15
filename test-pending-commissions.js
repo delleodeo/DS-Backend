@@ -86,6 +86,7 @@ async function safeDel(keys) {
   }
 }
 
+
 async function zAddSafe(key, score, value, ttlSec) {
   if (!isRedisAvailable()) return false;
   
@@ -122,46 +123,6 @@ async function zRemRangeByScoreSafe(key, min, max) {
   }
 }
 
-// Promisified Redis operations
-const getAsync = async (key) => {
-  if (!isRedisAvailable()) return null;
-  try {
-    return await client.get(key);
-  } catch (err) {
-    console.warn(`Redis get failed for key "${key}":`, err.message);
-    return null;
-  }
-};
-
-const setAsync = async (key, value, ...args) => {
-  if (!isRedisAvailable()) return false;
-  try {
-    // Support setAsync(key, value, 'EX', 300) or setAsync(key, value, ttl)
-    if (args.length === 2 && args[0] === 'EX') {
-      await client.setEx(key, args[1], value);
-    } else if (args.length === 1 && typeof args[0] === 'number') {
-      // setAsync(key, value, ttl)
-      await client.setEx(key, args[0], value);
-    } else {
-      await client.set(key, value);
-    }
-    return true;
-  } catch (err) {
-    console.warn(`Redis set failed for key "${key}":`, err.message);
-    return false;
-  }
-};
-
-const delAsync = async (key) => {
-  if (!isRedisAvailable()) return 0;
-  try {
-    return await client.del(key);
-  } catch (err) {
-    console.warn(`Redis del failed for key "${key}":`, err.message);
-    return 0;
-  }
-};
-
 module.exports = client;
 module.exports.connectRedis = connectRedis;
 module.exports.isRedisAvailable = isRedisAvailable;
@@ -170,6 +131,43 @@ module.exports.safeDel = safeDel;
 module.exports.zAddSafe = zAddSafe;
 module.exports.zCardSafe = zCardSafe;
 module.exports.zRemRangeByScoreSafe = zRemRangeByScoreSafe;
-module.exports.getAsync = getAsync;
-module.exports.setAsync = setAsync;
-module.exports.delAsync = delAsync;
+
+// Promisified Redis operations
+// const getAsync = async (key) => {
+//   if (!isRedisAvailable()) return null;
+//   try {
+//     return await client.get(key);
+//   } catch (err) {
+//     console.warn(`Redis get failed for key "${key}":`, err.message);
+//     return null;
+//   }
+// };
+
+// const setAsync = async (key, value, ttl) => {
+//   if (!isRedisAvailable()) return false;
+//   try {
+//     if (ttl) {
+//       await client.setEx(key, ttl, value);
+//     } else {
+//       await client.set(key, value);
+//     }
+//     return true;
+//   } catch (err) {
+//     console.warn(`Redis set failed for key "${key}":`, err.message);
+//     return false;
+//   }
+// };
+
+// const delAsync = async (key) => {
+//   if (!isRedisAvailable()) return 0;
+//   try {
+//     return await client.del(key);
+//   } catch (err) {
+//     console.warn(`Redis del failed for key "${key}":`, err.message);
+//     return 0;
+//   }
+// };
+
+// module.exports.getAsync = getAsync;
+// module.exports.setAsync = setAsync;
+// module.exports.delAsync = delAsync;

@@ -14,6 +14,7 @@ const generalLimiter = rateLimiter({ windowSec: 60, maxRequests: 30, keyPrefix: 
 
 router.post("/", protect, createOrderLimiter, orderController.createOrder);
 router.get("/", protect, generalLimiter, orderController.getOrdersByUser);
+router.get("/counts", protect, generalLimiter, orderController.getOrderStatusCounts);
 router.get("/vendor", protect, generalLimiter, orderController.getOrdersByVendor);
 router.get("/product/:productId", generalLimiter, orderController.getOrdersByProduct);
 router.get("/:id", generalLimiter, orderController.getOrderById);

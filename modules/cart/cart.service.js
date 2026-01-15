@@ -133,25 +133,37 @@ exports.updateCartItemService = async (userId, item) => {
 exports.removeCartItemService = async (userId, productId, optionId) => {
 	console.log("Removing item: START");
 	console.log(JSON.stringify({ productId, optionId }));
-	const cart = await Cart.findOne({ userId });
+
+	// Use atomic findOneAndUpdate to avoid version conflicts
+	// For products without options, optionId equals productId
+	// For products with options, optionId is the actual option ID
+	const cart = await Cart.findOneAndUpdate(
+		{ userId },
+		[
+			{
+				$set: {
+					items: {
+						$filter: {
+							input: "$items",
+							cond: {
+								$not: {
+									$and: [
+										{ $eq: ["$$this.productId", { $toObjectId: productId }] },
+										{ $eq: ["$$this.optionId", optionId ? { $toObjectId: optionId } : null] }
+									]
+								}
+							}
+						}
+					},
+					updatedAt: new Date()
+				}
+			}
+		],
+		{ new: true, runValidators: true }
+	);
+
 	if (!cart) throw new Error("Cart not found");
 
-	cart.items = cart.items.filter((item) => {
-		const isProductMatch = item.productId.equals(productId);
-		const isOptionMatch =
-			// Both have no optionId
-			(!item.optionId && !optionId) ||
-			// Both have an optionId and they are the same
-			(item.optionId &&
-				optionId &&
-				String(item.optionId) === String(optionId));
-
-		// We want to keep items that DON'T match
-		return !(isProductMatch && isOptionMatch);
-	});
-
-	cart.updatedAt = new Date();
-	await cart.save();
 	if (isRedisAvailable()) {
 		const { safeDel } = require('../../config/redis');
 		await safeDel(getCacheKey(userId));
@@ -171,6 +183,7 @@ exports.clearCartService = async (userId) => {
 	if (isRedisAvailable()) {
 		await redisClient.set(getCacheKey(userId), JSON.stringify(cart)).catch(() => {});
 	}
+	console.log("Cart cleared for user:", cart);
 	return cart;
 };
 
@@ -186,39 +199,54 @@ exports.removeItemsFromCartService = async (userId, itemsToRemove) => {
 		return await exports.getCartService(userId);
 	}
 
-	const cart = await Cart.findOne({ userId });
-	if (!cart) {
-		console.log("Cart not found for user:", userId);
-		return { userId, items: [] };
-	}
-
 	console.log("Removing specific items from cart:", {
 		userId,
 		itemCount: itemsToRemove.length,
 		items: itemsToRemove.map(i => ({ productId: i.productId, optionId: i.optionId }))
 	});
 
-	// Filter out items that match the items to remove
-	cart.items = cart.items.filter((cartItem) => {
-		// Check if this cart item should be removed
-		const shouldRemove = itemsToRemove.some((removeItem) => {
-			const productMatch = String(cartItem.productId) === String(removeItem.productId);
-			const optionMatch = 
-				// Both have no optionId
-				(!cartItem.optionId && !removeItem.optionId) ||
-				// Both have an optionId and they match
-				(cartItem.optionId && removeItem.optionId && 
-				 String(cartItem.optionId) === String(removeItem.optionId));
-			
-			return productMatch && optionMatch;
-		});
-		
-		// Keep items that should NOT be removed
-		return !shouldRemove;
-	});
+	// Create conditions for items to remove
+	const removeConditions = itemsToRemove.map(removeItem => ({
+		$and: [
+			{ $eq: ["$$this.productId", removeItem.productId] },
+			{
+				$or: [
+					// Both have no optionId
+					{ $and: [{ $eq: ["$$this.optionId", null] }, { $eq: [removeItem.optionId, null] }] },
+					// Both have optionId and they match
+					{ $and: [{ $ne: ["$$this.optionId", null] }, { $ne: [removeItem.optionId, null] }, { $eq: ["$$this.optionId", removeItem.optionId] }] }
+				]
+			}
+		]
+	}));
 
-	cart.updatedAt = new Date();
-	await cart.save();
+	// Use atomic findOneAndUpdate to avoid version conflicts
+	const cart = await Cart.findOneAndUpdate(
+		{ userId },
+		[
+			{
+				$set: {
+					items: {
+						$filter: {
+							input: "$items",
+							cond: {
+								$not: {
+									$or: removeConditions
+								}
+							}
+						}
+					},
+					updatedAt: new Date()
+				}
+			}
+		],
+		{ new: true, runValidators: true }
+	);
+
+	if (!cart) {
+		console.log("Cart not found for user:", userId);
+		return { userId, items: [] };
+	}
 
 	if (isRedisAvailable()) {
 		const { safeDel } = require('../../config/redis');

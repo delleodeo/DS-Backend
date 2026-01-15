@@ -7,13 +7,19 @@ const router = express.Router();
 const { param, query, body } = require('express-validator');
 const walletController = require('./wallet.controller');
 const { protect, restrictTo } = require('../../auth/auth.controller');
-const { createRateLimiter, financialLimiter } = require('../../middleware/rateLimiter');
+const rateLimiter = require('../../utils/rateLimiter');
 
 // Standard rate limiter
-const standardLimiter = createRateLimiter({
+const standardLimiter = rateLimiter({
   windowMs: 15 * 60 * 1000,
   max: 100
 });
+
+const financialLimiter = rateLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: 5
+});
+
 
 // Validation rules
 const userIdValidation = [

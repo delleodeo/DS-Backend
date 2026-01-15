@@ -89,12 +89,74 @@ const ProductSchema = new mongoose.Schema({
 // XSS Protection: Sanitize user-generated content before saving
 ProductSchema.pre('save', function(next) {
   try {
-    // Sanitize product description
+    // Sanitize product description - allow safe formatting tags from Quill editor
     if (this.description && typeof this.description === 'string') {
       this.description = sanitizeHtml(this.description, {
-        allowedTags: [], // No HTML tags allowed
-        allowedAttributes: {},
-        disallowedTagsMode: 'discard'
+        // Allow Quill editor formatting tags
+        allowedTags: [
+          'b', 'i', 'em', 'strong', 'u', 's', 'strike',
+          'ul', 'ol', 'li',
+          'p', 'br', 'span',
+          'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+          'a', 'blockquote', 'pre', 'code'
+        ],
+        allowedAttributes: {
+          'p': ['class', 'style'],
+          'span': ['class', 'style'],
+          'li': ['class', 'style'],
+          'ol': ['class', 'style'],
+          'ul': ['class', 'style'],
+          'a': ['href', 'target', 'rel'],
+          'h1': ['class'],
+          'h2': ['class'],
+          'h3': ['class'],
+          'h4': ['class'],
+          'h5': ['class'],
+          'h6': ['class'],
+          'blockquote': ['class']
+        },
+        // Use custom matcher function to allow all Quill classes (ql-indent-*, ql-align-*, etc.)
+        allowedClasses: {
+          'p': (className) => className.startsWith('ql-'),
+          'span': (className) => className.startsWith('ql-'),
+          'li': (className) => className.startsWith('ql-'),
+          'ol': (className) => className.startsWith('ql-'),
+          'ul': (className) => className.startsWith('ql-'),
+          'h1': (className) => className.startsWith('ql-'),
+          'h2': (className) => className.startsWith('ql-'),
+          'h3': (className) => className.startsWith('ql-'),
+          'h4': (className) => className.startsWith('ql-'),
+          'h5': (className) => className.startsWith('ql-'),
+          'h6': (className) => className.startsWith('ql-'),
+          'blockquote': (className) => className.startsWith('ql-')
+        },
+        allowedStyles: {
+          '*': {
+            'padding-left': [/^\d+(?:px|em|rem)$/],
+            'margin-left': [/^\d+(?:px|em|rem)$/],
+            'text-align': [/^(left|right|center|justify)$/]
+          }
+        },
+        disallowedTagsMode: 'discard',
+        // Security: only allow safe URL schemes for links
+        allowedSchemes: ['http', 'https', 'mailto'],
+        allowedSchemesByTag: {
+          a: ['http', 'https', 'mailto']
+        },
+        allowProtocolRelative: false,
+        // Transform links to open in new tab safely
+        transformTags: {
+          'a': function(tagName, attribs) {
+            return {
+              tagName: 'a',
+              attribs: {
+                href: attribs.href || '',
+                target: '_blank',
+                rel: 'noopener noreferrer'
+              }
+            };
+          }
+        }
       }).trim();
     }
 

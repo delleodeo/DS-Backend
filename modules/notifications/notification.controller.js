@@ -10,6 +10,10 @@ const { validationResult } = require('express-validator');
  */
 const getNotifications = async (req, res, next) => {
   try {
+    if (!req.user || !req.user._id) {
+      return res.status(401).json({ success: false, message: 'Authentication required' });
+    }
+    
     const userId = req.user._id;
     const { page = 1, limit = 20, type, unreadOnly } = req.query;
     

@@ -169,43 +169,208 @@ await safeDel(getUserOrdersKey(orderData.userId || orderData.customerId || (save
 	}
 };
 // GET ORDERS BY USER
-exports.getOrdersByUserService = async (userId) => {
+exports.getOrdersByUserService = async (userId, options = {}) => {
+	const { page = 1, limit = 10 } = options;
 	userId = sanitizeMongoInput(userId);
 	validateId(String(userId), 'userId');
-	const key = getUserOrdersKey(userId);
-	
-	if (isRedisAvailable()) {
-		const cache = await redisClient.get(key).catch(() => null);
-		if (cache) return JSON.parse(cache);
-	}
+
+	const skip = (page - 1) * limit;
+
+	// Get total count for pagination metadata
+	const totalOrders = await Order.countDocuments({ customerId: userId });
 
 	const orders = await Order.find({ customerId: userId })
 		.sort({ createdAt: -1 })
+		.skip(skip)
+		.limit(limit)
 		.lean();
-		
-	if (orders.length > 0 && isRedisAvailable()) {
-		await redisClient.set(key, JSON.stringify(orders), { EX: 300 }).catch(() => {});
-	}
-	return orders;
+
+	const totalPages = Math.ceil(totalOrders / limit);
+	const hasMore = page < totalPages;
+
+	return {
+		orders,
+		pagination: {
+			page,
+			limit,
+			totalOrders,
+			totalPages,
+			hasMore
+		}
+	};
 };
 
-// GET ORDERS BY VENDOR
-exports.getOrdersByVendorService = async (vendorId) => {
-	vendorId = sanitizeMongoInput(vendorId);
-	validateId(String(vendorId), 'vendorId');
-	const key = getVendorOrdersKey(vendorId);
-	
+// GET ORDER STATUS COUNTS BY USER
+exports.getOrderStatusCountsService = async (userId) => {
+	userId = sanitizeMongoInput(userId);
+	validateId(String(userId), 'userId');
+
+	const key = `order_counts:user:${userId}:v2`;
+
 	if (isRedisAvailable()) {
 		const cache = await redisClient.get(key).catch(() => null);
 		if (cache) return JSON.parse(cache);
 	}
 
-	const orders = await Order.find({ vendorId }).sort({ createdAt: -1 }).lean();
+	// Get counts for each status
+	const [pending, paid, shipped, delivered, cancelled, refundRequested, refundApproved, refunded] = await Promise.all([
+		Order.countDocuments({ customerId: userId, status: 'pending' }),
+		Order.countDocuments({ customerId: userId, status: 'paid' }),
+		Order.countDocuments({ customerId: userId, status: 'shipped' }),
+		Order.countDocuments({ customerId: userId, status: 'delivered' }),
+		Order.countDocuments({ customerId: userId, status: 'cancelled' }),
+		Order.countDocuments({ customerId: userId, status: 'refund_requested' }),
+		Order.countDocuments({ customerId: userId, status: 'refund_approved' }),
+		Order.countDocuments({ customerId: userId, status: 'refunded' })
+	]);
 
-	if (orders.length > 0 && isRedisAvailable()) {
-		await redisClient.set(key, JSON.stringify(orders), { EX: 150 }).catch(() => {});
+	const statusCounts = {
+		pending,
+		paid,
+		shipped,
+		delivered: delivered + refundRequested + refundApproved + refunded, // Include all refund statuses in delivered
+		cancelled
+	};
+
+	if (isRedisAvailable()) {
+		await redisClient.set(key, JSON.stringify(statusCounts), { EX: 300 }).catch(() => {});
 	}
-	return orders;
+
+	return statusCounts;
+};
+
+// GET ORDERS BY VENDOR (WITH PAGINATION AND FILTERING)
+exports.getOrdersByVendorService = async (vendorId, options = {}) => {
+	const {
+		page = 1,
+		limit = 12,
+		search = '',
+		status = null,
+		paymentMethod = null,
+		paymentStatus = null,
+		dateFrom = null,
+		dateTo = null,
+		sortDir = -1
+	} = options;
+
+	vendorId = sanitizeMongoInput(vendorId);
+	validateId(String(vendorId), 'vendorId');
+
+	// Create cache key based on all parameters
+	const cacheKey = `vendor_orders:${vendorId}:p${page}:l${limit}:s${search}:st${status}:pm${paymentMethod}:ps${paymentStatus}:df${dateFrom?.toISOString()}:dt${dateTo?.toISOString()}:sd${sortDir}`;
+
+	if (isRedisAvailable()) {
+		const cache = await redisClient.get(cacheKey).catch(() => null);
+		if (cache) return JSON.parse(cache);
+	}
+
+	// Build MongoDB query
+	const query = { vendorId };
+
+	// Add status filter
+	if (status) {
+		query.status = status;
+	}
+
+	// Add payment method filter
+	if (paymentMethod) {
+		query.paymentMethod = paymentMethod;
+	}
+
+	// Add payment status filter
+	if (paymentStatus) {
+		query.paymentStatus = paymentStatus;
+	}
+
+	// Add date range filter
+	if (dateFrom || dateTo) {
+		query.createdAt = {};
+		if (dateFrom) query.createdAt.$gte = dateFrom;
+		if (dateTo) {
+			// Set to end of day
+			const endOfDay = new Date(dateTo);
+			endOfDay.setHours(23, 59, 59, 999);
+			query.createdAt.$lte = endOfDay;
+		}
+	}
+
+	// Build search query for multiple fields
+	let searchQuery = {};
+	if (search) {
+		const searchRegex = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+		searchQuery = {
+			$or: [
+				{ _id: searchRegex }, // Order ID
+				{ orderId: searchRegex }, // Alternative order ID
+				{ name: searchRegex }, // Customer name
+				{ trackingNumber: searchRegex } // Tracking number
+			]
+		};
+	}
+
+	// Combine queries
+	const finalQuery = search ? { ...query, ...searchQuery } : query;
+
+	// Get total count for pagination
+	const total = await Order.countDocuments(finalQuery);
+
+	// Calculate pagination values
+	const totalPages = Math.ceil(total / limit);
+	const skip = (page - 1) * limit;
+
+	// Fetch paginated results
+	const orders = await Order.find(finalQuery)
+		.sort({ createdAt: sortDir })
+		.skip(skip)
+		.limit(limit)
+		.lean();
+
+	// Get status counts for the current vendor (for UI tabs)
+	let statusCounts = [];
+	try {
+		statusCounts = await Order.aggregate([
+			{ $match: { vendorId: new mongoose.Types.ObjectId(vendorId) } },
+			{ $group: { _id: "$status", count: { $sum: 1 } } }
+		]);
+		console.log(`Status counts for vendor ${vendorId}:`, statusCounts);
+	} catch (aggError) {
+		console.error('Error calculating status counts:', aggError);
+		statusCounts = [];
+	}
+
+	const statusCountMap = { 
+		all: statusCounts.reduce((sum, item) => sum + item.count, 0),
+		pending: 0,
+		paid: 0,
+		shipped: 0,
+		delivered: 0,
+		cancelled: 0
+	};
+	statusCounts.forEach(item => {
+		statusCountMap[item._id] = item.count;
+	});
+
+	// Prepare response
+	const result = {
+		orders,
+		pagination: {
+			page,
+			limit,
+			total,
+			totalPages,
+			hasNext: page < totalPages,
+			hasPrev: page > 1
+		},
+		statusCounts: statusCountMap
+	};
+
+	// Cache the result (shorter TTL for filtered results)
+	if (isRedisAvailable()) {
+		const ttl = search || status || paymentMethod || paymentStatus || dateFrom || dateTo ? 60 : 150; // 1 min for filtered, 2.5 min for unfiltered
+		await redisClient.set(cacheKey, JSON.stringify(result), { EX: ttl }).catch(() => {});
+	}
+
+	return result;
 };
 
 // GET ORDERS BY PRODUCT
@@ -334,6 +499,9 @@ exports.cancelOrderService = async (orderId, customerId = null) => {
 			safeDel(getVendorOrdersKey(updated.vendorId)),
 			...updated.items.map((item) => safeDel(getProductOrdersKey(item.orderProductId || item.productId))),
 		]);
+
+		// Invalidate all vendor order cache keys to update status counts
+		await deleteKeysByPattern(`vendor_orders:${updated.vendorId}:*`);
 	}
 
 	return updated;
@@ -372,20 +540,23 @@ const deleteKeysByPattern = async (pattern) => {
 const updateProductStock = async (productId, optionId, quantity) => {
 	const product = await Product.findById(productId);
 	if (!product) {
-		console.error(`Product with ID ${productId} not found.`);
-		return;
+		throw new ValidationError(`Product not found. Unable to update stock for this item.`);
 	}
 
 	// If the product uses options, update both the option and the main product
 	if (product.isOption) {
 		if (!optionId) {
-			console.error(
-				`Product ${productId} requires an option ID, but none was provided.`
-			);
-			return;
+			throw new ValidationError(`Product variant information is missing. Please contact support.`);
 		}
 		const option = product.option.id(optionId);
 		if (option) {
+			// Check if there's enough stock for this option
+			if (option.stock < quantity) {
+				throw new ValidationError(
+					`Insufficient stock for "${product.name}" (${option.label}). Only ${option.stock} items available, but ${quantity} were ordered.`
+				);
+			}
+
 			// Update option stock
 			option.stock -= quantity;
 			option.sold += quantity;
@@ -394,13 +565,16 @@ const updateProductStock = async (productId, optionId, quantity) => {
 			product.stock -= quantity;
 			product.sold += quantity;
 		} else {
-			console.error(
-				`Option with ID ${optionId} not found in product ${productId}.`
-			);
-			return;
+			throw new ValidationError(`Product variant "${optionId}" not found for "${product.name}". This item may no longer be available.`);
 		}
 	} else {
 		// If the product does not use options, update the main product stock
+		if (product.stock < quantity) {
+			throw new ValidationError(
+				`Insufficient stock for "${product.name}". Only ${product.stock} items available, but ${quantity} were ordered.`
+			);
+		}
+
 		product.stock -= quantity;
 		product.sold += quantity;
 		console.log(`Updated product ${product.name} stock and sold counts.`);
@@ -555,6 +729,9 @@ exports.updateOrderStatusService = async (
 					safeDel(getProductOrdersKey(item.productId || item.orderProductId))
 				),
 			]);
+
+			// Invalidate all vendor order cache keys to update status counts
+			await deleteKeysByPattern(`vendor_orders:${updated.vendorId}:*`);
 		}
 	} catch (redisErr) {
 		console.warn("Redis cache invalidation failed:", redisErr.message);

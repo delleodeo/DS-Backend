@@ -1,6 +1,7 @@
 const {
 	createOrderService,
 	getOrdersByUserService,
+	getOrderStatusCountsService,
 	getOrderByIdService,
 	updateOrderStatusService,
 	cancelOrderService,
@@ -54,15 +55,50 @@ exports.createOrder = asyncHandler(async (req, res) => {
 exports.getOrdersByUser = asyncHandler(async (req, res) => {
 	const { id } = req.user;
 	validateId(String(id), 'userId');
-	const orders = await getOrdersByUserService(id);
-	res.json(orders);
+
+	// Extract pagination parameters with defaults and validation
+	const page = Math.max(1, parseInt(req.query.page) || 1);
+	const limit = Math.min(50, Math.max(1, parseInt(req.query.limit) || 10)); // Max 50, min 1, default 10
+
+	const result = await getOrdersByUserService(id, { page, limit });
+	res.json(result);
+});
+
+exports.getOrderStatusCounts = asyncHandler(async (req, res) => {
+	const { id } = req.user;
+	validateId(String(id), 'userId');
+	const counts = await getOrderStatusCountsService(id);
+	res.json({ success: true, data: counts });
 });
 
 exports.getOrdersByVendor = asyncHandler(async (req, res) => {
 	const { id } = req.user;
 	validateId(String(id), 'vendorId');
-	const orders = await getOrdersByVendorService(id);
-	res.json(orders);
+
+	// Extract pagination and filter parameters with defaults and validation
+	const page = Math.max(1, parseInt(req.query.page) || 1);
+	const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 12)); // Max 100, min 1, default 12
+	const search = req.query.search ? sanitizeMongoInput(String(req.query.search).trim()) : '';
+	const status = req.query.status && req.query.status !== 'all' ? sanitizeMongoInput(req.query.status) : null;
+	const paymentMethod = req.query.paymentMethod && req.query.paymentMethod !== 'all' ? sanitizeMongoInput(req.query.paymentMethod) : null;
+	const paymentStatus = req.query.paymentStatus && req.query.paymentStatus !== 'all' ? sanitizeMongoInput(req.query.paymentStatus) : null;
+	const dateFrom = req.query.dateFrom ? new Date(req.query.dateFrom) : null;
+	const dateTo = req.query.dateTo ? new Date(req.query.dateTo) : null;
+	const sortDir = req.query.sortDir === 'asc' ? 1 : -1; // Default desc (-1)
+
+	const result = await getOrdersByVendorService(id, {
+		page,
+		limit,
+		search,
+		status,
+		paymentMethod,
+		paymentStatus,
+		dateFrom,
+		dateTo,
+		sortDir
+	});
+
+	res.json(result);
 });
 
 exports.getOrdersByProduct = asyncHandler(async (req, res) => {

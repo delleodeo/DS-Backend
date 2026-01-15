@@ -308,7 +308,7 @@ async function getActivePromotionsByVendor(vendorId) {
   
   // Convert to ObjectId if it's a string
   const mongoose = require('mongoose');
-  const vendorObjectId = mongoose.Types.ObjectId.isValid(vendorId) 
+  const vendorObjectId = mongoose.isValidObjectId(vendorId) 
     ? new mongoose.Types.ObjectId(vendorId) 
     : vendorId;
   

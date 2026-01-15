@@ -100,7 +100,15 @@ async function getPaginatedProducts(skip = 1, limit) {
 }
 
 async function createProductService(data) {
+  // Preserve raw HTML description before sanitization
+  const rawDescription = data?.description;
+  
   data = sanitizeMongoInput(data);
+  
+  // Restore the HTML description so the model's pre-save hook can properly sanitize it
+  if (rawDescription) {
+    data.description = rawDescription;
+  }
 
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -435,8 +443,16 @@ async function getProductByIdService(id) {
 }
 
 async function updateProductService(id, data) {
+  // Preserve raw HTML description before sanitization
+  const rawDescription = data?.description;
+  
   id = sanitizeMongoInput(id);
   data = sanitizeMongoInput(data);
+  
+  // Restore the HTML description so the model's pre-save hook can properly sanitize it
+  if (rawDescription) {
+    data.description = rawDescription;
+  }
 
   if (!isValidObjectId(id)) {
     throw createError("Invalid product ID", 400);

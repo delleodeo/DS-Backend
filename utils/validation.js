@@ -8,7 +8,7 @@ function sanitize(input) {
 }
 
 function isValidObjectId(id) {
-  return typeof id === 'string' && mongoose.Types.ObjectId.isValid(id);
+  return typeof id === 'string' && mongoose.isValidObjectId(id);
 }
 
 function validateCartItemPayload(item) {
