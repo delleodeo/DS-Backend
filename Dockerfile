@@ -11,5 +11,6 @@ CMD ["npm", "run", "dev"]
 
 FROM base AS prod
 COPY . .
+RUN npm install -g pm2
 EXPOSE 3002
-CMD ["npm", "start"]
+CMD ["pm2-runtime", "start", "server.js"]
