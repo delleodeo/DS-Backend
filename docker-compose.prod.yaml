@@ -1,0 +1,38 @@
+services:
+  app:
+    build:
+      context: .
+      target: prod
+    container_name: doro-shop-app-prod
+    ports:
+      - "3002:3002"
+    depends_on:
+      - mongo
+      - redis
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - MONGO_URI=mongodb://mongo:27017/doros
+      - REDIS_URL=redis://redis:6379
+    command: npm start
+    restart: unless-stopped
+
+  mongo:
+    image: mongo
+    container_name: mongo-prod
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    restart: unless-stopped
+
+  redis:
+    image: redis:alpine
+    container_name: redis-prod
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+volumes:
+  mongo-data:
