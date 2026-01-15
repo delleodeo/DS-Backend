@@ -45,6 +45,8 @@ app.use(
       "http://localhost:3002",
       "http://localhost:5173",
       "http://192.168.1.7:3002",
+      "https://165.22.109.100:3002",
+      "http://165.22.109.100:3002",
       "http://localhost:4173", // Add Vite preview
     ], // your actual frontend domain
     credentials: true, // VERY IMPORTANT — allows cookies
