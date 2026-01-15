@@ -17,20 +17,20 @@ services:
       - REDIS_URL=redis://redis:6379
     restart: unless-stopped
 
-  mongo:
-    image: mongo
-    container_name: mongo-prod
-    ports:
-      - "27017:27017"
-    volumes:
-      - mongo-data:/data/db
-    restart: unless-stopped
+  # mongo:
+  #   image: mongo
+  #   container_name: mongo-prod
+  #   ports:
+  #     - "27017:27017"
+  #   volumes:
+  #     - mongo-data:/data/db
+  #   restart: unless-stopped
 
   redis:
     image: redis:alpine
     container_name: redis-prod
     ports:
-      - "6379:6379"
+      - "5000:6379"
     restart: unless-stopped
 
 volumes:
