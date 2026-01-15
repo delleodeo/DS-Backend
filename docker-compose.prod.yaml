@@ -5,7 +5,7 @@ services:
       target: prod
     container_name: doro-shop-app-prod
     ports:
-      - "3002:3002"
+      - "3001:3001"
     depends_on:
       - mongo
       - redis
@@ -13,7 +13,7 @@ services:
       - .env
     environment:
       - NODE_ENV=production
-      - MONGO_URI=mongodb://mongo:27017/doros
+      - MONGO_URI=mongodb+srv://doroshop01:doroshop@cluster0.p6vosmo.mongodb.net/doros?retryWrites=true&w=majority&appName=Cluster0
       - REDIS_URL=redis://redis:6379
     restart: unless-stopped
 
