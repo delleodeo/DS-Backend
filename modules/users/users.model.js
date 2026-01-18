@@ -28,10 +28,10 @@ const UserSchema = new mongoose.Schema({
   providerId: String, 
   phone: String,
   address: {type: AddressSchema},
-  wallet: {
-    cash: { type: Number, default: 0 },
-    usdt: { type: Number, default: 0 },
-  },
+  // wallet: {
+  //   cash: { type: Number, default: 0 },
+  //   usdt: { type: Number, default: 0 },
+  // },
   role: {
     type: String,
     enum: ["user", "vendor", "admin", 'rider'],

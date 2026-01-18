@@ -36,9 +36,7 @@ async function connectRedis() {
     isRedisConnected = true;
     return;
   }
-  if (connectingPromise) {
-    return connectingPromise;
-  }
+  if (connectingPromise) return connectingPromise;
 
   console.log("Attempting to connect to Redis...");
   connectingPromise = client
@@ -66,29 +64,59 @@ function isRedisAvailable() {
   return isRedisConnected && client.isOpen;
 }
 
-/**
- * Safely delete keys (single key string or array of keys). Won't throw if client closed.
- * @param {string|string[]} keys
- */
 async function safeDel(keys) {
-  if (!isRedisAvailable()) return;
+  if (!isRedisAvailable()) return 0;
+
   try {
-    if (!keys) return;
+    if (!keys) return 0;
+
     if (typeof keys === "string") {
-      await client.del(keys);
-      return;
+      return await client.del(keys);
     }
+
     if (Array.isArray(keys) && keys.length) {
-      await client.del(...keys);
+      return await client.del(...keys);
     }
+
+    return 0;
   } catch (err) {
     console.warn("safeDel failed:", err.message);
+    return 0;
+  }
+}
+
+async function safeDelPattern(pattern, { batchSize = 500, useUnlink = true } = {}) {
+  if (!isRedisAvailable()) return 0;
+  if (!pattern || typeof pattern !== "string") return 0;
+
+  let cursor = "0";
+  let deleted = 0;
+
+  try {
+    do {
+      const res = await client.scan(cursor, { MATCH: pattern, COUNT: batchSize });
+      cursor = res.cursor;
+      const keys = res.keys || [];
+
+      if (keys.length) {
+        if (useUnlink && typeof client.unlink === "function") {
+          deleted += await client.unlink(keys);
+        } else {
+          deleted += await client.del(keys);
+        }
+      }
+    } while (cursor !== "0");
+
+    return deleted;
+  } catch (err) {
+    console.warn(`safeDelPattern failed for "${pattern}":`, err.message);
+    return deleted;
   }
 }
 
 async function zAddSafe(key, score, value, ttlSec) {
   if (!isRedisAvailable()) return false;
-  
+
   try {
     await client.zAdd(key, { score, value });
     if (ttlSec) await client.expire(key, ttlSec);
@@ -99,9 +127,6 @@ async function zAddSafe(key, score, value, ttlSec) {
   }
 }
 
-/**
- * Safely get cardinality of sorted set
- */
 async function zCardSafe(key) {
   if (!isRedisAvailable()) return 0;
   try {
@@ -122,7 +147,6 @@ async function zRemRangeByScoreSafe(key, min, max) {
   }
 }
 
-// Promisified Redis operations
 const getAsync = async (key) => {
   if (!isRedisAvailable()) return null;
   try {
@@ -135,12 +159,11 @@ const getAsync = async (key) => {
 
 const setAsync = async (key, value, ...args) => {
   if (!isRedisAvailable()) return false;
+
   try {
-    // Support setAsync(key, value, 'EX', 300) or setAsync(key, value, ttl)
-    if (args.length === 2 && args[0] === 'EX') {
+    if (args.length === 2 && args[0] === "EX") {
       await client.setEx(key, args[1], value);
-    } else if (args.length === 1 && typeof args[0] === 'number') {
-      // setAsync(key, value, ttl)
+    } else if (args.length === 1 && typeof args[0] === "number") {
       await client.setEx(key, args[0], value);
     } else {
       await client.set(key, value);
@@ -167,6 +190,7 @@ module.exports.connectRedis = connectRedis;
 module.exports.isRedisAvailable = isRedisAvailable;
 module.exports.getRedisClient = getRedisClient;
 module.exports.safeDel = safeDel;
+module.exports.safeDelPattern = safeDelPattern;
 module.exports.zAddSafe = zAddSafe;
 module.exports.zCardSafe = zCardSafe;
 module.exports.zRemRangeByScoreSafe = zRemRangeByScoreSafe;

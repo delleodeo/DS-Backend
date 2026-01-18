@@ -80,10 +80,10 @@ const VendorSchema = new mongoose.Schema({
 
   // Financials
   commissionRate: { type: Number, default: 0.07 },
-  accountBalance: {
-    cash: { type: Number, default: 0 },
-    usdt: { type: Number, default: 0 },
-  },
+  // accountBalance: {
+  //   cash: { type: Number, default: 0 },
+  //   usdt: { type: Number, default: 0 },
+  // },
 
   // Dashboard Stats
   totalProducts: { type: Number, default: 0 },

@@ -1,6 +1,7 @@
 const bcrypt = require("bcryptjs");
 const User = require("./users.model");
 const Admin = require("../admin/admin.model.js");
+const UserWallet = require("../wallet/userWallet.model.js");
 const {
 	getRedisClient,
 	isRedisAvailable,
@@ -160,23 +161,29 @@ exports.loginUser = async ({ email, password }) => {
 	return { user: userData, token };
 };
 
-exports.getUserById = async (id) => {
-	const cacheKey = getUserCacheKey(id);
+exports.getUserById = async (userId) => {
+	const cacheKey = getUserCacheKey(userId);
 	
 	if (isRedisAvailable()) {
 		const cached = await redisClient.get(cacheKey).catch(() => null);
 		if (cached) return JSON.parse(cached);
 	}
 
-	const user = await User.findById(id).select("-password");
+	const user = await User.findById(userId).select("-password");
 	if (!user) throw new Error("User not found");
+
+	const wallet = await UserWallet.getOrCreateForUser(userId);
+
+	const userData = {wallet: wallet?.balance || 0, ...user.toObject()};
+
+	console.log("User wallet:", wallet);
 
 	if (isRedisAvailable()) {
 		const { safeDel } = require("../../config/redis");
-		await redisClient.set(cacheKey, JSON.stringify(user), { EX: 600 }).catch(() => {});
+		await redisClient.set(cacheKey, JSON.stringify(userData), { EX: 300 }).catch(() => {});
 		// no-op safeDel available if required elsewhere
 	} 
-	return user;
+	return userData;
 };
 
 exports.updateUser = async (id, updates) => {

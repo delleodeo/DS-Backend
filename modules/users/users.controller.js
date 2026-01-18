@@ -130,7 +130,7 @@ exports.getSession = async (req, res) => {
 	// TIER 2 SECURITY: Fetch complete user data including real-time wallet balance
 	try {
 		const User = require('../users/users.model');
-		const Wallet = require('../wallet/wallet.model');
+		const Wallet = require('../wallet/userWallet.model');
 		
 		console.log(`[Session] Fetching session data for user=${result.decoded.id}`);
 		
@@ -188,7 +188,6 @@ exports.getSession = async (req, res) => {
 
 exports.logout = async (req, res) => {
 	try {
-		// Get token from Authorization header or cookies
 		let token = req.token; // From protect middleware
 		
 		if (!token) {

@@ -4,8 +4,9 @@
  */
 const mongoose = require("mongoose");
 const Commission = require("./commission.model");
-const Wallet = require("../wallet/wallet.model");
+const Wallet = require("../wallet/userWallet.model");
 const WalletTransaction = require("../wallet/walletTransaction.model");
+ const VendorWallet = require("../wallet/vendorWallet.model.js");
 const Order = require("../orders/orders.model");
 const Vendor = require("../vendors/vendors.model");
 const {
@@ -53,30 +54,21 @@ const recordFailure = () => {
   if (circuitBreaker.failures >= circuitBreaker.threshold) {
     circuitBreaker.isOpen = true;
     console.error(
-      "[Commission Service] Circuit breaker opened due to repeated failures"
+      "[Commission Service] Circuit breaker opened due to repeated failures",
     );
   }
 };
 
-/**
- * Generate idempotency key for remittance
- */
 const generateIdempotencyKey = (commissionId, vendorId) => {
   // Deterministic per commission/vendor to block concurrent duplicates
   const data = `${commissionId}:${vendorId}`;
   return crypto.createHash("sha256").update(data).digest("hex");
 };
 
-/**
- * Validate MongoDB ObjectId
- */
 const isValidObjectId = (id) => {
   return mongoose.isValidObjectId(id);
 };
 
-/**
- * Sanitize string input
- */
 const sanitizeString = (str) => {
   if (typeof str !== "string") return "";
   return str
@@ -85,19 +77,15 @@ const sanitizeString = (str) => {
     .substring(0, 1000);
 };
 
-/**
- * Create a commission record for COD orders
- */
 const createCODCommission = async (orderData, vendorId, shopId) => {
   try {
     if (!checkCircuitBreaker()) {
       throw new ExternalServiceError(
         "Commission Service",
-        "Service temporarily unavailable"
+        "Service temporarily unavailable",
       );
     }
 
-    // Validate inputs
     if (!isValidObjectId(orderData.orderId)) {
       throw new ValidationError("Invalid order ID");
     }
@@ -121,7 +109,7 @@ const createCODCommission = async (orderData, vendorId, shopId) => {
 
     if (existingCommission) {
       console.log(
-        `[Commission] Commission already exists for order ${orderData.orderId}`
+        `[Commission] Commission already exists for order ${orderData.orderId}`,
       );
       return existingCommission;
     }
@@ -163,7 +151,7 @@ const createCODCommission = async (orderData, vendorId, shopId) => {
     await invalidateCommissionCache(vendorId);
 
     console.log(
-      `[Commission] Created commission ${commission._id} for order ${orderData.orderId}, amount: ${commissionAmount}`
+      `[Commission] Created commission ${commission._id} for order ${orderData.orderId}, amount: ${commissionAmount}`,
     );
 
     return commission;
@@ -211,7 +199,7 @@ const getPendingCommissions = async (vendorId, options = {}) => {
 
     console.log(
       "[Commission] Query for pending commissions:",
-      JSON.stringify(query)
+      JSON.stringify(query),
     );
 
     const [commissions, total] = await Promise.all([
@@ -226,7 +214,7 @@ const getPendingCommissions = async (vendorId, options = {}) => {
     ]);
 
     console.log(
-      `[Commission] Found ${commissions.length} commissions for vendor ${vendorId}`
+      `[Commission] Found ${commissions.length} commissions for vendor ${vendorId}`,
     );
 
     const result = {
@@ -340,303 +328,7 @@ const getCommissionSummary = async (vendorId) => {
   }
 };
 
-/**
- * Remit commission using wallet balance - SECURE TRANSACTION
- * TIER 1 SECURITY: Server-side authorization with fresh data verification
- */
-const remitCommissionViaWallet = async (commissionId, vendorId, userId) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
 
-  try {
-    if (!checkCircuitBreaker()) {
-      throw new ExternalServiceError(
-        "Commission Service",
-        "Service temporarily unavailable. Please try again later."
-      );
-    }
-
-    // Validate inputs
-    if (!isValidObjectId(commissionId)) {
-      throw new ValidationError("Invalid commission ID");
-    }
-    if (!isValidObjectId(vendorId)) {
-      throw new ValidationError("Invalid vendor ID");
-    }
-
-    // Convert to ObjectId for consistent comparison
-    const commissionObjectId = new mongoose.Types.ObjectId(commissionId);
-    const vendorObjectId = new mongoose.Types.ObjectId(vendorId);
-
-    console.log(
-      `[Commission Remit] Starting remittance: commission=${commissionId}, vendor=${vendorId}`
-    );
-
-    // Get commission with lock
-    const commission = await Commission.findOne({
-      _id: commissionObjectId,
-      vendor: vendorObjectId,
-      status: { $in: ["pending", "overdue"] },
-    }).session(session);
-
-    if (!commission) {
-      throw new NotFoundError("Commission");
-    }
-
-    // Generate deterministic idempotency key and pre-lock the commission to prevent concurrent double-remit
-    const idempotencyKey = generateIdempotencyKey(commissionId, vendorId);
-    const existingKey = await Commission.findOne({
-      remittanceIdempotencyKey: idempotencyKey,
-    }).session(session);
-    if (existingKey) {
-      throw new ConflictError("Duplicate transaction detected");
-    }
-
-    // Pre-set the idempotency key on this commission inside the transaction; rollback will release it
-    commission.remittanceIdempotencyKey = idempotencyKey;
-    await commission.save({ session });
-
-    // Fetch vendor so we can seed a missing wallet
-    const vendor = await Vendor.findOne({
-      $or: [{ _id: vendorObjectId }, { userId: vendorObjectId }],
-    }).session(session);
-
-    if (!vendor) {
-      throw new NotFoundError("Vendor");
-    }
-
-    const vendorCashBalance =
-      Number(
-        vendor?.accountBalance?.cash ?? vendor?.accountBalance?.balance ?? 0
-      ) || 0;
-
-    // Get vendor's wallet with lock (auto-create from vendor.accountBalance if missing)
-    let wallet = await Wallet.findOne({ user: vendorObjectId }).session(
-      session
-    );
-
-    if (!wallet) {
-      console.warn(
-        `[Commission Remit] Wallet not found for vendor=${vendorId}, attempting auto-create from vendor.accountBalance`
-      );
-      const seedBalance = vendorCashBalance;
-      wallet = await Wallet.findOneAndUpdate(
-        { user: vendorObjectId },
-        {
-          $setOnInsert: {
-            user: vendorObjectId,
-            balance: seedBalance,
-            currency: "PHP",
-          },
-        },
-        { new: true, upsert: true, session }
-      );
-      console.log(
-        `[Commission Remit] Wallet created for vendor=${vendorId}, seededBalance=${seedBalance}`
-      );
-    }
-
-    // TIER 1 SECURITY: Explicit type conversions
-    const balanceNumber = Number(wallet.balance);
-    const commissionAmountNumber = Number(commission.commissionAmount);
-
-    console.log(
-      `[Commission Remit] Balance check: wallet=${
-        wallet._id
-      }, balanceType=${typeof balanceNumber}, balance=${balanceNumber}, amountType=${typeof commissionAmountNumber}, amount=${commissionAmountNumber}`
-    );
-
-    // Validate balance types
-    if (isNaN(balanceNumber) || !isFinite(balanceNumber)) {
-      console.error(
-        `[Commission Remit] Invalid balance value: ${
-          wallet.balance
-        } (type: ${typeof wallet.balance})`
-      );
-      throw new ValidationError(
-        "Invalid wallet balance. Please contact support."
-      );
-    }
-
-    if (isNaN(commissionAmountNumber) || !isFinite(commissionAmountNumber)) {
-      console.error(
-        `[Commission Remit] Invalid commission amount: ${
-          commission.commissionAmount
-        } (type: ${typeof commission.commissionAmount})`
-      );
-      throw new ValidationError(
-        "Invalid commission amount. Please contact support."
-      );
-    }
-
-    // Check sufficient balance with explicit numeric comparison
-    if (balanceNumber < commissionAmountNumber) {
-      console.warn(
-        `[Commission Remit] Insufficient balance: wallet=${wallet._id}, have=${balanceNumber}, need=${commissionAmountNumber}`
-      );
-      throw new ValidationError(
-        `Insufficient wallet balance. Have: ₱${balanceNumber.toFixed(
-          2
-        )}, Need: ₱${commissionAmountNumber.toFixed(2)}`
-      );
-    }
-
-    // Verify wallet balance integrity (double-check) with type safety
-    const verifiedBalance = Number(
-      await verifyWalletBalance(wallet._id, session)
-    );
-    const verifiedBalanceNumber = Number(commissionAmountNumber);
-
-    console.log(
-      `[Commission Remit] Balance verification: verified=${verifiedBalance}, required=${verifiedBalanceNumber}`
-    );
-
-    if (isNaN(verifiedBalance) || verifiedBalance < verifiedBalanceNumber) {
-      console.error(
-        `[Commission Remit] Balance verification failed: verified=${verifiedBalance}, required=${verifiedBalanceNumber}`
-      );
-      throw new ValidationError(
-        "Balance verification failed. Please try again."
-      );
-    }
-
-    // Create wallet transaction record
-    const balanceBeforeNumber = Number(wallet.balance);
-    const balanceAfterNumber = balanceBeforeNumber - commissionAmountNumber;
-
-    const walletTransaction = new WalletTransaction({
-      wallet: wallet._id,
-      user: vendorId,
-      type: "debit",
-      amount: commissionAmountNumber,
-      description: `COD Commission remittance for Order #${
-        commission.metadata?.orderNumber || commission.order
-      }`,
-      reference: `COMM-${commission._id}`,
-      referenceType: "commission",
-      referenceId: commission._id,
-      status: "completed",
-      balanceBefore: balanceBeforeNumber,
-      balanceAfter: balanceAfterNumber,
-      metadata: {
-        commissionId: commission._id,
-        orderId: commission.order,
-        commissionAmount: commissionAmountNumber,
-        remittedAt: new Date(),
-      },
-    });
-
-    await walletTransaction.save({ session });
-
-    console.log(
-      `[Commission Remit] Created transaction: id=${walletTransaction._id}, debit=${commissionAmountNumber}, before=${balanceBeforeNumber}, after=${balanceAfterNumber}`
-    );
-
-    // TIER 1 SECURITY: Deduct from wallet with atomic operation and explicit balance check
-    const updatedWallet = await Wallet.findOneAndUpdate(
-      {
-        _id: wallet._id,
-        balance: { $gte: commissionAmountNumber }, // Atomic balance check with numeric value
-      },
-      {
-        $inc: { balance: -commissionAmountNumber },
-        $push: {
-          transactions: {
-            type: "debit",
-            amount: commissionAmountNumber,
-            description: `Commission remittance - ${commission.metadata?.orderNumber}`,
-            date: new Date(),
-            reference: walletTransaction._id,
-          },
-        },
-      },
-      { new: true, session }
-    );
-
-    if (!updatedWallet) {
-      console.error(
-        `[Commission Remit] Failed to deduct: wallet=${wallet._id}, attempted deduction=${commissionAmountNumber}`
-      );
-      throw new ValidationError(
-        "Failed to deduct from wallet. Balance may have changed."
-      );
-    }
-
-    const updatedBalanceNumber = Number(updatedWallet.balance);
-    console.log(
-      `[Commission Remit] Wallet updated: wallet=${wallet._id}, newBalance=${updatedBalanceNumber}`
-    );
-
-    // Sync vendor.accountBalance with the authoritative wallet balance (same session)
-    await Vendor.findOneAndUpdate(
-      {
-        $or: [{ _id: vendorObjectId }, { userId: vendorObjectId }],
-      },
-      {
-        $set: {
-          "accountBalance.cash": updatedBalanceNumber,
-          "accountBalance.balance": updatedBalanceNumber,
-          updatedAt: new Date(),
-        },
-      },
-      { session, new: true }
-    );
-
-    // Update commission status with remittance history
-    commission.status = "remitted";
-    commission.remittedAt = new Date();
-    commission.remittanceMethod = "wallet";
-    commission.walletTransactionId = walletTransaction._id;
-    commission.remittanceIdempotencyKey = idempotencyKey;
-
-    // Add to remittance history
-    commission.remittanceHistory.push({
-      remittedAt: new Date(),
-      amount: commission.commissionAmount,
-      method: "wallet",
-      walletTransactionId: walletTransaction._id,
-      referenceNumber: walletTransaction.reference,
-      status: "completed",
-      notes: `Remitted via wallet. Transaction ID: ${walletTransaction._id}`,
-    });
-
-    commission.statusHistory.push({
-      status: "remitted",
-      changedAt: new Date(),
-      changedBy: userId,
-      reason: "Remitted via wallet deduction",
-    });
-
-    await commission.save({ session });
-
-    // Commit transaction
-    await session.commitTransaction();
-
-    // Invalidate caches
-    await Promise.all([
-      invalidateCommissionCache(vendorId),
-      invalidateWalletCache(vendorId),
-    ]);
-
-    console.log(
-      `[Commission] Successfully remitted commission ${commissionId}, amount: ${commission.commissionAmount}`
-    );
-
-    return {
-      success: true,
-      commission: commission,
-      transaction: walletTransaction,
-      newBalance: updatedWallet.balance,
-    };
-  } catch (error) {
-    await session.abortTransaction();
-    recordFailure();
-    console.error("[Commission] Error remitting commission:", error);
-    throw error;
-  } finally {
-    session.endSession();
-  }
-};
 
 /**
  * Get remittance history for a vendor
@@ -658,7 +350,7 @@ const getRemittanceHistory = async (vendorId, options = {}) => {
         status: "remitted",
       })
         .select(
-          "order commissionAmount remittanceHistory remittedAt remittanceMethod"
+          "order commissionAmount remittanceHistory remittedAt remittanceMethod",
         )
         .populate("order", "orderNumber")
         .sort({ remittedAt: -1 })
@@ -685,13 +377,13 @@ const getRemittanceHistory = async (vendorId, options = {}) => {
           walletTransactionId: entry.walletTransactionId,
           status: entry.status,
           notes: entry.notes,
-        }))
+        })),
       )
       .sort((a, b) => new Date(b.remittedAt) - new Date(a.remittedAt));
 
     const totalAmount = history.reduce(
       (sum, item) => sum + (item.amount || 0),
-      0
+      0,
     );
 
     return {
@@ -713,9 +405,6 @@ const getRemittanceHistory = async (vendorId, options = {}) => {
   }
 };
 
-/**
- * Bulk remit multiple commissions
- */
 const bulkRemitCommissions = async (commissionIds, vendorId, userId) => {
   const results = {
     successful: [],
@@ -730,7 +419,7 @@ const bulkRemitCommissions = async (commissionIds, vendorId, userId) => {
       const result = await remitCommissionViaWallet(
         commissionId,
         vendorId,
-        userId
+        userId,
       );
       results.successful.push({
         commissionId,
@@ -759,43 +448,237 @@ const bulkRemitCommissions = async (commissionIds, vendorId, userId) => {
 /**
  * Verify wallet balance integrity
  */
-const verifyWalletBalance = async (walletId, session) => {
-  const wallet = await Wallet.findById(walletId).session(session);
 
-  if (!wallet) return 0;
 
-  // Calculate expected balance from transactions
-  const transactionSum = await WalletTransaction.aggregate([
-    { $match: { wallet: walletId, status: "completed" } },
-    {
-      $group: {
-        _id: null,
-        credits: {
-          $sum: { $cond: [{ $eq: ["$type", "credit"] }, "$amount", 0] },
+
+const MONEY_EPSILON = 0.01;
+
+const toObjectId = (value) => {
+  if (value instanceof mongoose.Types.ObjectId) return value;
+  if (typeof value === "string" && mongoose.isValidObjectId(value)) return new mongoose.Types.ObjectId(value);
+  return null;
+};
+
+const toMoneyNumber = (value) => {
+  const n = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(n) ? n : NaN;
+};
+
+// const verifyWalletBalance = async (walletId, session) => {
+//   const walletObjectId = toObjectId(walletId);
+//   if (!walletObjectId) return { stored: 0, calculated: 0 };
+
+//   const wallet = await VendorWallet.findById(walletObjectId).session(session);
+//   if (!wallet) return { stored: 0, calculated: 0 };
+
+//   const [sum] = await WalletTransaction.aggregate([
+//     { $match: { wallet: walletObjectId, status: "completed" } },
+//     {
+//       $group: {
+//         _id: null,
+//         credits: { $sum: { $cond: [{ $eq: ["$type", "credit"] }, "$amount", 0] } },
+//         debits: { $sum: { $cond: [{ $eq: ["$type", "debit"] }, "$amount", 0] } },
+//       },
+//     },
+//   ]).session(session);
+
+//   const stored = toMoneyNumber(wallet.balance ?? 0);
+//   const credits = toMoneyNumber(sum?.credits ?? 0);
+//   const debits = toMoneyNumber(sum?.debits ?? 0);
+
+//   const storedSafe = Number.isFinite(stored) ? stored : 0;
+//   const calculated = Number.isFinite(credits) && Number.isFinite(debits) ? credits - debits : storedSafe;
+
+//   if (Number.isFinite(stored) && Number.isFinite(calculated) && Math.abs(calculated - stored) > MONEY_EPSILON) {
+//     console.warn(
+//       `[Wallet] Balance discrepancy wallet=${walletObjectId.toString()} stored=${stored.toFixed(2)} calculated=${calculated.toFixed(2)}`
+//     );
+//   }
+
+//   return { stored: storedSafe, calculated };
+// };
+
+const getOrCreateVendorWalletInSession = async (vendorId, session) => {
+  const vendorObjectId = toObjectId(vendorId);
+  if (!vendorObjectId) throw new ValidationError("Invalid vendor ID");
+
+  const wallet = await VendorWallet.findOneAndUpdate(
+    { user: vendorObjectId },
+    { $setOnInsert: { user: vendorObjectId, balance: 0, transactions: [] } },
+    { new: true, upsert: true, session }
+  );
+
+  if (!wallet) throw new ValidationError("Wallet not found");
+  return wallet;
+};
+
+const ensureCommissionForRemit = async (commissionId, vendorId, session) => {
+  const commissionObjectId = toObjectId(commissionId);
+  const vendorObjectId = toObjectId(vendorId);
+
+  if (!commissionObjectId) throw new ValidationError("Invalid commission ID");
+  if (!vendorObjectId) throw new ValidationError("Invalid vendor ID");
+
+  const commission = await Commission.findOne({
+    _id: commissionObjectId,
+    vendor: vendorObjectId,
+    status: { $in: ["pending", "overdue"] },
+  }).session(session);
+
+  if (!commission) throw new NotFoundError("Commission");
+  return commission;
+};
+
+const setCommissionIdempotencyKeyOnce = async (commission, commissionId, vendorId, session) => {
+  const key = generateIdempotencyKey(String(commissionId), String(vendorId));
+
+  const duplicate = await Commission.findOne({ remittanceIdempotencyKey: key }).session(session);
+  if (duplicate) throw new ConflictError("Duplicate transaction detected");
+
+  commission.remittanceIdempotencyKey = key;
+  await commission.save({ session });
+
+  return key;
+};
+
+const remitCommissionViaWallet = async (commissionId, vendorId, userId) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    if (!checkCircuitBreaker()) {
+      throw new ExternalServiceError(
+        "Commission Service",
+        "Service temporarily unavailable. Please try again later."
+      );
+    }
+
+    const commission = await ensureCommissionForRemit(commissionId, vendorId, session);
+    const idempotencyKey = await setCommissionIdempotencyKeyOnce(commission, commissionId, vendorId, session);
+
+    const wallet = await getOrCreateVendorWalletInSession(vendorId, session);
+
+    const commissionAmount = toMoneyNumber(commission.commissionAmount);
+    if (!Number.isFinite(commissionAmount) || commissionAmount <= 0) {
+      throw new ValidationError("Invalid commission amount. Please contact support.");
+    }
+
+    const storedBalance = toMoneyNumber(wallet.balance);
+    if (!Number.isFinite(storedBalance)) {
+      throw new ValidationError("Invalid wallet balance. Please contact support.");
+    }
+
+    if (storedBalance < commissionAmount) {
+      throw new ValidationError(
+        `Insufficient wallet balance. Have: ₱${storedBalance.toFixed(2)}, Need: ₱${commissionAmount.toFixed(2)}`
+      );
+    }
+
+    // const { calculated: calculatedBalance } = await verifyWalletBalance(wallet._id, session);
+    // console.log("yawaaaaa", calculatedBalance)
+    // if (!Number.isFinite(calculatedBalance) || calculatedBalance + MONEY_EPSILON < commissionAmount) {
+    //   throw new ValidationError("Balance verification failed. Please try again.");
+    // }
+
+    const balanceBefore = storedBalance;
+    const balanceAfter = balanceBefore - commissionAmount;
+    
+    const [walletTransaction] = await WalletTransaction.create(
+      [
+        {
+          wallet: wallet._id,
+          user: toObjectId(vendorId) ?? vendorId,
+          type: "debit",
+          amount: commissionAmount,
+          description: `COD Commission remittance for Order #${commission.metadata?.orderNumber || commission.order}`,
+          reference: `COMM-${commission._id}`,
+          referenceType: "commission",
+          referenceId: commission._id,
+          status: "completed",
+          balanceBefore,
+          balanceAfter,
+          metadata: {
+            commissionId: commission._id,
+            orderId: commission.order,
+            commissionAmount,
+            remittedAt: new Date(),
+          },
         },
-        debits: {
-          $sum: { $cond: [{ $eq: ["$type", "debit"] }, "$amount", 0] },
+      ],
+      { session }
+    );
+
+    const updatedWallet = await VendorWallet.findOneAndUpdate(
+      { _id: wallet._id, balance: { $gte: commissionAmount } },
+      {
+        $inc: { balance: -commissionAmount },
+        $push: {
+          transactions: {
+            type: "debit",
+            amount: commissionAmount,
+            description: `Commission remittance - ${commission.metadata?.orderNumber || commission.order}`,
+            date: new Date(),
+            reference: walletTransaction._id,
+          },
         },
       },
-    },
-  ]).session(session);
-
-  if (transactionSum.length === 0) {
-    return wallet.balance;
-  }
-
-  const calculatedBalance =
-    transactionSum[0].credits - transactionSum[0].debits;
-
-  // Log discrepancy if found
-  if (Math.abs(calculatedBalance - wallet.balance) > 0.01) {
-    console.warn(
-      `[Wallet] Balance discrepancy detected for wallet ${walletId}. Stored: ${wallet.balance}, Calculated: ${calculatedBalance}`
+      { new: true, session }
     );
-  }
 
-  return wallet.balance;
+    if (!updatedWallet) {
+      throw new ValidationError("Failed to deduct from wallet. Balance may have changed.");
+    }
+
+    commission.status = "remitted";
+    commission.remittedAt = new Date();
+    commission.remittanceMethod = "wallet";
+    commission.walletTransactionId = walletTransaction._id;
+    commission.remittanceIdempotencyKey = idempotencyKey;
+
+    commission.remittanceHistory.push({
+      remittedAt: new Date(),
+      amount: commissionAmount,
+      method: "wallet",
+      walletTransactionId: walletTransaction._id,
+      referenceNumber: walletTransaction.reference,
+      status: "completed",
+      notes: `Remitted via wallet. Transaction ID: ${walletTransaction._id}`,
+    });
+
+    commission.statusHistory.push({
+      status: "remitted",
+      changedAt: new Date(),
+      changedBy: userId,
+      reason: "Remitted via wallet deduction",
+    });
+
+    await commission.save({ session });
+    await session.commitTransaction();
+
+    await Promise.all([invalidateCommissionCache(vendorId), invalidateWalletCache(vendorId)]);
+
+    return {
+      success: true,
+      commission,
+      transaction: walletTransaction,
+      newBalance: updatedWallet.balance,
+    };
+  } catch (error) {
+    await session.abortTransaction();
+    recordFailure();
+    throw error;
+  } finally {
+    session.endSession();
+  }
 };
+
+
+
+
+
+
+
+
 
 /**
  * Admin: Get all commissions with filters
@@ -997,7 +880,7 @@ const updateCommissionStatus = async (
   commissionId,
   newStatus,
   adminId,
-  notes
+  notes,
 ) => {
   try {
     if (!isValidObjectId(commissionId)) {
@@ -1027,7 +910,7 @@ const updateCommissionStatus = async (
       changedAt: new Date(),
       changedBy: adminId,
       reason: sanitizeString(
-        notes || `Status changed to ${newStatus} by admin`
+        notes || `Status changed to ${newStatus} by admin`,
       ),
     });
 

@@ -1,13 +1,9 @@
-/**
- * Wallet Model
- * Stores wallet information with transaction history
- */
 const mongoose = require('mongoose');
 
 const walletSchema = new mongoose.Schema({
   user: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
+    ref: 'Vendor',
     required: true,
     unique: true,
     index: true
@@ -24,14 +20,12 @@ const walletSchema = new mongoose.Schema({
     default: 'PHP'
   },
   
-  // For USDT or other currencies
   usdtBalance: {
     type: Number,
     default: 0,
     min: 0
   },
   
-  // Lock status for pending transactions
   isLocked: {
     type: Boolean,
     default: false
@@ -44,16 +38,14 @@ const walletSchema = new mongoose.Schema({
   
   lockedReason: {
     type: String,
-    default: null
+    default: false
   },
   
-  // Last activity timestamp
   lastActivityAt: {
     type: Date,
     default: Date.now
   },
   
-  // Embedded transaction history for quick access (last 10)
   recentTransactions: [{
     type: {
       type: String,
@@ -68,25 +60,26 @@ const walletSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Index for efficient queries
-walletSchema.index({ user: 1, balance: 1 });
 
-// Method to safely get balance
+walletSchema.index({ user: 1, balance: 1 });
+walletSchema.index({ isLocked: 1 });
+walletSchema.index({ lastActivityAt: -1 });
+
+
 walletSchema.methods.getAvailableBalance = function() {
   if (this.isLocked) return 0;
   return this.balance;
 };
 
-// Static: Get or create wallet for user
-walletSchema.statics.getOrCreateForUser = async function(userId) {
-  let wallet = await this.findOne({ user: userId });
+walletSchema.statics.getOrCreateForUser = async function(vendorId) {
+  let wallet = await this.findOne({ user: vendorId });
   if (!wallet) {
-    wallet = new this({ user: userId, balance: 0 });
+    wallet = new this({ user: vendorId, balance: 0 });
     await wallet.save();
   }
   return wallet;
 };
 
-const Wallet = mongoose.model('Wallet', walletSchema);
+const Wallet = mongoose.model('vendorwallets', walletSchema);
 
 module.exports = Wallet;

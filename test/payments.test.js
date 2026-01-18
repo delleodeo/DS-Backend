@@ -487,9 +487,10 @@ describe("Payment Service", () => {
         bankName: "BPI",
       };
 
+      // 50.00 PHP = 5000 centavos (below 100 PHP minimum)
       await expect(
-        paymentService.createWithdrawal(mockUserId, 50000, bankAccount)
-      ).rejects.toThrow("Minimum withdrawal amount is 1,000 PHP");
+        paymentService.createWithdrawal(mockUserId, 5000, bankAccount)
+      ).rejects.toThrow("Minimum withdrawal amount is 100 PHP");
     });
 
     it("should throw error if bank details incomplete", async () => {
@@ -501,6 +502,85 @@ describe("Payment Service", () => {
       await expect(
         paymentService.createWithdrawal(mockUserId, 200000, incompleteBankAccount)
       ).rejects.toThrow("Complete bank account details are required");
+    });
+
+    it("should allow vendor to cancel pending withdrawal", async () => {
+      const bankAccount = {
+        accountNumber: "1234567890",
+        accountName: "John Doe",
+        bankName: "BPI",
+      };
+
+      const withdrawal = await paymentService.createWithdrawal(
+        mockUserId,
+        200000,
+        bankAccount
+      );
+
+      const cancelled = await paymentService.cancelWithdrawal(mockUserId, withdrawal._id, 'Cancelled by vendor');
+
+      expect(cancelled.status).toBe('cancelled');
+    });
+
+    it("should not allow cancelling a non-pending withdrawal", async () => {
+      const bankAccount = {
+        accountNumber: "9876543210",
+        accountName: "Jane Doe",
+        bankName: "BPI",
+      };
+
+      const withdrawal = await paymentService.createWithdrawal(
+        mockUserId,
+        200000,
+        bankAccount
+      );
+
+      // Simulate that withdrawal moved to processing
+      withdrawal.status = 'processing';
+      await withdrawal.save();
+
+      await expect(
+        paymentService.cancelWithdrawal(mockUserId, withdrawal._id, 'Too late')
+      ).rejects.toThrow('Only pending withdrawals can be cancelled');
+    });
+
+    it('should allow admin to approve a pending withdrawal and debit wallet', async () => {
+      const Wallet = require('../modules/wallet/userWallet.model');
+
+      // Seed wallet document with sufficient funds (PHP)
+      await Wallet.create({ user: mockUserId, balance: 5000, usdtBalance: 0 });
+
+      const bankAccount = {
+        accountNumber: '111122223333',
+        accountName: 'Alice',
+        bankName: 'BDO'
+      };
+
+      const withdrawal = await paymentService.createWithdrawal(mockUserId, 200000, bankAccount); // 2000.00 PHP
+
+      const adminId = new mongoose.Types.ObjectId();
+
+      const approved = await paymentService.approveWithdrawal(adminId, withdrawal._id, { adminProofUrl: 'http://proof', payoutRef: 'PR123' });
+
+      expect(approved.status).toBe('succeeded');
+      expect(approved.approvedBy.toString()).toBe(adminId.toString());
+    });
+
+    it('should allow admin to reject a pending withdrawal with reason', async () => {
+      const bankAccount = {
+        accountNumber: '444455556666',
+        accountName: 'Bob',
+        bankName: 'BPI'
+      };
+
+      const withdrawal = await paymentService.createWithdrawal(mockUserId, 200000, bankAccount);
+
+      const adminId = new mongoose.Types.ObjectId();
+
+      const rejected = await paymentService.rejectWithdrawal(adminId, withdrawal._id, 'Insufficient KYC');
+
+      expect(rejected.status).toBe('failed');
+      expect(rejected.rejectionReason).toBe('Insufficient KYC');
     });
   });
 

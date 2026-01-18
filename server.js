@@ -13,7 +13,7 @@ const { startCommissionReminderCron } = require("./utils/commissionReminderCron"
 const http = require('http');
 
 resetAllNew();
-const PORT = process.env.PORT || 3002; // Changed to 3002 to avoid conflicts
+const PORT = process.env.PORT || 3001; // Changed to 3001 to match frontend
 
 const startServer = async () => {
   try {
@@ -28,9 +28,9 @@ const startServer = async () => {
     const io = initSocket(server);
     
     server.listen(PORT, () => {
-      console.log(`🚀 Server running at http://localhost:${PORT}`);
-      console.log(`📡 Socket.IO enabled for real-time messaging`);
-      console.log(`🔌 WebSocket endpoint: ws://localhost:${PORT}/socket.io/`);
+      console.log(`Server running at http://localhost:${PORT}`);
+      console.log(`Socket.IO enabled for real-time messaging`);
+      console.log(`WebSocket endpoint: ws://localhost:${PORT}/socket.io/`);
     });
 
     // Start monthly revenue cron job

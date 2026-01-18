@@ -2,12 +2,16 @@ const Payment = require("./payments.model");
 const Order = require("../orders/orders.model");
 const Vendor = require("../vendors/vendors.model");
 const Admin = require("../admin/admin.model");
+const walletService = require("../wallet/wallet.service");
 const sanitizeMongoInput = require("../../utils/sanitizeMongoInput");
 const paymongoClient = require("../../utils/paymongoClient");
 const logger = require("../../utils/logger");
 const { safeDel, isRedisAvailable } = require("../../config/redis");
 const mongoose = require("mongoose");
-const { clearCartService, removeItemsFromCartService } = require("../cart/cart.service");
+const {
+  clearCartService,
+  removeItemsFromCartService,
+} = require("../cart/cart.service");
 const {
   ValidationError,
   NotFoundError,
@@ -28,7 +32,7 @@ const getOrderKey = (id) => `orders:${id}`;
  */
 function generateTrackingNumber() {
   const timestamp = Date.now();
-  const randomHex = crypto.randomBytes(4).toString('hex').toUpperCase();
+  const randomHex = crypto.randomBytes(4).toString("hex").toUpperCase();
   return `DSTRK${timestamp}${randomHex}`;
 }
 
@@ -37,7 +41,9 @@ function generateTrackingNumber() {
  */
 async function updateVendorRevenue(vendorId) {
   // Revenue is now recalculated when orders are delivered; avoid incrementing on payment creation
-  logger.info(`[REVENUE TRACKING] Skipping revenue update during payment creation for vendor ${vendorId}`);
+  logger.info(
+    `[REVENUE TRACKING] Skipping revenue update during payment creation for vendor ${vendorId}`
+  );
 }
 
 /**
@@ -48,51 +54,60 @@ async function updateVendorRevenue(vendorId) {
  */
 function flattenMetadataForPayMongo(metadata = {}) {
   const flattened = {};
-  
+
   try {
     for (const [key, value] of Object.entries(metadata)) {
       // Skip null, undefined, or empty values
-      if (value === null || value === undefined || value === '') {
+      if (value === null || value === undefined || value === "") {
         continue;
       }
-      
+
       // Sanitize key name (remove special characters, limit length)
-      const sanitizedKey = String(key).replace(/[^a-zA-Z0-9_]/g, '_').substring(0, 50);
-      
-      if (typeof value === 'object' && !Array.isArray(value)) {
+      const sanitizedKey = String(key)
+        .replace(/[^a-zA-Z0-9_]/g, "_")
+        .substring(0, 50);
+
+      if (typeof value === "object" && !Array.isArray(value)) {
         // Flatten nested objects by prefixing keys with parent key
         for (const [nestedKey, nestedValue] of Object.entries(value)) {
-          if (nestedValue !== null && nestedValue !== undefined && nestedValue !== '') {
-            const sanitizedNestedKey = String(nestedKey).replace(/[^a-zA-Z0-9_]/g, '_').substring(0, 30);
-            const combinedKey = `${sanitizedKey}_${sanitizedNestedKey}`.substring(0, 50);
+          if (
+            nestedValue !== null &&
+            nestedValue !== undefined &&
+            nestedValue !== ""
+          ) {
+            const sanitizedNestedKey = String(nestedKey)
+              .replace(/[^a-zA-Z0-9_]/g, "_")
+              .substring(0, 30);
+            const combinedKey =
+              `${sanitizedKey}_${sanitizedNestedKey}`.substring(0, 50);
             flattened[combinedKey] = String(nestedValue).substring(0, 500); // Limit value length
           }
         }
       } else if (Array.isArray(value)) {
         // Convert arrays to comma-separated strings
-        flattened[sanitizedKey] = value.join(',').substring(0, 500);
+        flattened[sanitizedKey] = value.join(",").substring(0, 500);
       } else {
         // Convert all primitive values to strings with length limit
         flattened[sanitizedKey] = String(value).substring(0, 500);
       }
     }
-    
+
     // Ensure we don't exceed PayMongo's metadata limits (typically 50 keys max)
     const keys = Object.keys(flattened);
     if (keys.length > 50) {
-      logger.warn('Metadata has too many keys, truncating to first 50 keys');
+      logger.warn("Metadata has too many keys, truncating to first 50 keys");
       const truncated = {};
-      keys.slice(0, 50).forEach(key => {
+      keys.slice(0, 50).forEach((key) => {
         truncated[key] = flattened[key];
       });
       return truncated;
     }
-    
+
     return flattened;
   } catch (error) {
-    logger.error('Error flattening metadata for PayMongo:', error);
+    logger.error("Error flattening metadata for PayMongo:", error);
     // Return safe fallback metadata
-    return { error: 'metadata_processing_failed' };
+    return { error: "metadata_processing_failed" };
   }
 }
 
@@ -109,7 +124,13 @@ class PaymentService {
    * @param {String} description - Payment description
    * @param {Object} metadata - Additional metadata
    */
-  async createCheckoutPayment(userId, orderId, amount, description, metadata = {}) {
+  async createCheckoutPayment(
+    userId,
+    orderId,
+    amount,
+    description,
+    metadata = {}
+  ) {
     try {
       // Validate inputs
       const sanitizedAmount = sanitizeMongoInput(amount);
@@ -147,13 +168,13 @@ class PaymentService {
         ...metadata,
         orderId: orderId.toString(),
         userId: userId.toString(),
-        orderType: 'checkout'
+        orderType: "checkout",
       };
       const flattenedMetadata = flattenMetadataForPayMongo(rawMetadata);
 
       logger.info("Creating PayMongo payment intent with metadata:", {
         originalKeys: Object.keys(rawMetadata),
-        flattenedKeys: Object.keys(flattenedMetadata)
+        flattenedKeys: Object.keys(flattenedMetadata),
       });
 
       // Create payment intent with PayMongo
@@ -211,7 +232,13 @@ class PaymentService {
    * @param {Object} metadata - Additional metadata
    * @param {Object} checkoutData - Cart items and shipping details for order creation
    */
-  async createQRPHPayment(userId, amount, description, metadata = {}, checkoutData = null) {
+  async createQRPHPayment(
+    userId,
+    amount,
+    description,
+    metadata = {},
+    checkoutData = null
+  ) {
     try {
       // Validate inputs
       const sanitizedAmount = sanitizeMongoInput(amount);
@@ -222,8 +249,14 @@ class PaymentService {
       }
 
       // Validate checkoutData is provided for QRPH payments
-      if (!checkoutData || !checkoutData.items || checkoutData.items.length === 0) {
-        throw new ValidationError("Checkout data with items is required for QRPH payment");
+      if (
+        !checkoutData ||
+        !checkoutData.items ||
+        checkoutData.items.length === 0
+      ) {
+        throw new ValidationError(
+          "Checkout data with items is required for QRPH payment"
+        );
       }
 
       // Validate required checkout fields
@@ -260,16 +293,16 @@ class PaymentService {
       const rawMetadata = {
         ...metadata,
         userId: userId.toString(),
-        paymentMethod: 'qrph',
-        orderType: 'preorder',
-        itemCount: checkoutData.items.length.toString()
+        paymentMethod: "qrph",
+        orderType: "preorder",
+        itemCount: checkoutData.items.length.toString(),
       };
       const flattenedMetadata = flattenMetadataForPayMongo(rawMetadata);
 
       logger.info("Creating QRPH PayMongo payment intent with metadata:", {
         originalKeys: Object.keys(rawMetadata),
         flattenedKeys: Object.keys(flattenedMetadata),
-        itemCount: checkoutData.items.length
+        itemCount: checkoutData.items.length,
       });
 
       // Create payment intent with PayMongo for QRPH
@@ -280,14 +313,17 @@ class PaymentService {
       );
 
       logger.info("PayMongo payment intent created:", {
-        paymentIntentId: paymentIntent.data.id
+        paymentIntentId: paymentIntent.data.id,
       });
 
       // Create QRPH payment method
-      const paymentMethod = await paymongoClient.createPaymentMethod("qrph", {});
-      
+      const paymentMethod = await paymongoClient.createPaymentMethod(
+        "qrph",
+        {}
+      );
+
       logger.info("QRPH payment method created:", {
-        paymentMethodId: paymentMethod.data.id
+        paymentMethodId: paymentMethod.data.id,
       });
 
       // Attach payment method to get QR code
@@ -300,21 +336,25 @@ class PaymentService {
       logger.info("Payment method attached:", {
         paymentIntentId: attachedIntent.data.id,
         hasNextAction: !!attachedIntent.data.attributes.next_action,
-        nextActionType: attachedIntent.data.attributes.next_action?.type
+        nextActionType: attachedIntent.data.attributes.next_action?.type,
       });
 
       // Get the QR code from PayMongo's response
       let qrCodeUrl = null;
-      
+
       // PayMongo provides the QR code after attaching the payment method
-      if (attachedIntent.data.attributes.next_action && 
-          attachedIntent.data.attributes.next_action.code && 
-          attachedIntent.data.attributes.next_action.code.image_url) {
+      if (
+        attachedIntent.data.attributes.next_action &&
+        attachedIntent.data.attributes.next_action.code &&
+        attachedIntent.data.attributes.next_action.code.image_url
+      ) {
         qrCodeUrl = attachedIntent.data.attributes.next_action.code.image_url;
         logger.info("QR code URL extracted from PayMongo:", qrCodeUrl);
       } else {
-        logger.warn("No QR code URL found in PayMongo response, next_action:", 
-          JSON.stringify(attachedIntent.data.attributes.next_action, null, 2));
+        logger.warn(
+          "No QR code URL found in PayMongo response, next_action:",
+          JSON.stringify(attachedIntent.data.attributes.next_action, null, 2)
+        );
       }
 
       // Set expiration to 5 minutes for QRPH
@@ -334,29 +374,31 @@ class PaymentService {
         paymentIntentId: paymentIntent.data.id,
         idempotencyKey,
         gatewayResponse: paymentIntent,
-        metadata: new Map(Object.entries({ ...metadata, paymentMethod: 'qrph' })),
+        metadata: new Map(
+          Object.entries({ ...metadata, paymentMethod: "qrph" })
+        ),
         expiresAt,
         // Store checkout data for backend-driven order creation
         checkoutData: {
-          items: checkoutData.items.map(item => ({
+          items: checkoutData.items.map((item) => ({
             vendorId: item.vendorId,
             productId: item.productId,
             optionId: item.optionId || null,
             itemId: item.itemId || null,
-            name: item.name || '',
-            label: item.label || '',
-            imgUrl: item.imgUrl || '',
+            name: item.name || "",
+            label: item.label || "",
+            imgUrl: item.imgUrl || "",
             price: item.price,
-            quantity: item.quantity || 1
+            quantity: item.quantity || 1,
           })),
           shippingAddress: checkoutData.shippingAddress,
           customerName: checkoutData.customerName,
           phone: checkoutData.phone,
-          shippingOption: checkoutData.shippingOption || 'J&T',
+          shippingOption: checkoutData.shippingOption || "J&T",
           shippingFee: checkoutData.shippingFee || 0,
-          agreementDetails: checkoutData.agreementDetails || ''
+          agreementDetails: checkoutData.agreementDetails || "",
         },
-        ordersCreated: false
+        ordersCreated: false,
       });
 
       await payment.save();
@@ -366,7 +408,7 @@ class PaymentService {
         amount: sanitizedAmount,
         expiresAt,
         itemCount: checkoutData.items.length,
-        hasCheckoutData: true
+        hasCheckoutData: true,
       });
 
       return {
@@ -391,7 +433,7 @@ class PaymentService {
     // PayMongo doesn't directly provide QR images, so we use a QR generator
     // In production, you might want to use PayMongo's checkout page or a proper QR service
     const paymentUrl = `https://pm.link/${paymentIntentId}`;
-    
+
     // Using Google Charts API for QR generation (free, no API key needed)
     // Size 300x300, with the payment URL encoded
     const encodedUrl = encodeURIComponent(paymentUrl);
@@ -405,7 +447,12 @@ class PaymentService {
    * @param {String} paymentMethodId - Payment Method ID
    * @param {String} returnUrl - Return URL after payment
    */
-  async attachPaymentMethod(userId, paymentIntentId, paymentMethodId, returnUrl) {
+  async attachPaymentMethod(
+    userId,
+    paymentIntentId,
+    paymentMethodId,
+    returnUrl
+  ) {
     try {
       // Find payment record
       const payment = await Payment.findOne({ paymentIntentId });
@@ -468,32 +515,40 @@ class PaymentService {
           throw new NotFoundError("Payment record not found");
         }
         paymentIntentId = payment.paymentIntentId;
-        
+
         if (!paymentIntentId) {
-          throw new ValidationError("Payment record does not have a valid PayMongo payment intent ID");
+          throw new ValidationError(
+            "Payment record does not have a valid PayMongo payment intent ID"
+          );
         }
-      } else if (identifier.startsWith('pi_')) {
+      } else if (identifier.startsWith("pi_")) {
         // It's a PayMongo payment intent ID, find payment by paymentIntentId
         paymentIntentId = identifier;
         payment = await Payment.findOne({ paymentIntentId });
         if (!payment) {
-          throw new NotFoundError("Payment record not found for this payment intent");
+          throw new NotFoundError(
+            "Payment record not found for this payment intent"
+          );
         }
       } else {
-        throw new ValidationError("Invalid payment identifier. Must be a MongoDB ObjectId or PayMongo payment intent ID (starting with 'pi_')");
+        throw new ValidationError(
+          "Invalid payment identifier. Must be a MongoDB ObjectId or PayMongo payment intent ID (starting with 'pi_')"
+        );
       }
 
       logger.info("Checking payment status:", {
         identifier,
         paymentIntentId,
-        paymentRecordId: payment._id
+        paymentRecordId: payment._id,
       });
 
       // Retrieve from PayMongo using the payment intent ID
-      const paymentIntent = await paymongoClient.retrievePaymentIntent(paymentIntentId);
+      const paymentIntent = await paymongoClient.retrievePaymentIntent(
+        paymentIntentId
+      );
 
       const gatewayStatus = paymentIntent.data.attributes.status;
-      
+
       // Update local status based on gateway status
       const statusMap = {
         awaiting_payment_method: "awaiting_payment",
@@ -513,28 +568,38 @@ class PaymentService {
         if (newStatus === "succeeded") {
           payment.paidAt = new Date();
           payment.isFinal = true;
-          
+
           // Check if this is a QRPH payment with checkout data that needs order creation
           // This is a fallback in case webhook didn't arrive or failed
-          if (payment.type === "checkout" && payment.checkoutData && !payment.ordersCreated) {
-            logger.info("Creating orders from payment status check (webhook fallback):", {
-              paymentId: payment._id,
-              hasCheckoutData: !!payment.checkoutData,
-              itemCount: payment.checkoutData?.items?.length || 0
-            });
-            
+          if (
+            payment.type === "checkout" &&
+            payment.checkoutData &&
+            !payment.ordersCreated
+          ) {
+            logger.info(
+              "Creating orders from payment status check (webhook fallback):",
+              {
+                paymentId: payment._id,
+                hasCheckoutData: !!payment.checkoutData,
+                itemCount: payment.checkoutData?.items?.length || 0,
+              }
+            );
+
             try {
               // Create orders from stored checkout data
               const orderIds = await this.createOrdersFromPayment(payment);
-              
-              logger.info("Orders created successfully via status check fallback:", {
-                paymentId: payment._id,
-                orderIds
-              });
+
+              logger.info(
+                "Orders created successfully via status check fallback:",
+                {
+                  paymentId: payment._id,
+                  orderIds,
+                }
+              );
             } catch (orderError) {
               logger.error("Failed to create orders from status check:", {
                 paymentId: payment._id,
-                error: orderError.message
+                error: orderError.message,
               });
               // Don't throw - status check should still return payment info
               // Orders can be recovered manually via admin
@@ -549,7 +614,9 @@ class PaymentService {
           }
         } else if (newStatus === "failed") {
           payment.isFinal = true;
-          payment.failureReason = paymentIntent.data.attributes.last_payment_error?.message || "Payment failed";
+          payment.failureReason =
+            paymentIntent.data.attributes.last_payment_error?.message ||
+            "Payment failed";
         }
 
         await payment.save();
@@ -560,24 +627,34 @@ class PaymentService {
           oldStatus: previousStatus,
           newStatus,
         });
-      } else if (payment.status === "succeeded" && payment.checkoutData && !payment.ordersCreated) {
+      } else if (
+        payment.status === "succeeded" &&
+        payment.checkoutData &&
+        !payment.ordersCreated
+      ) {
         // Payment was already marked succeeded but orders weren't created
         // This can happen if webhook and polling both detected success but order creation failed
-        logger.info("Attempting order creation for already-succeeded payment:", {
-          paymentId: payment._id
-        });
-        
+        logger.info(
+          "Attempting order creation for already-succeeded payment:",
+          {
+            paymentId: payment._id,
+          }
+        );
+
         try {
           const orderIds = await this.createOrdersFromPayment(payment);
           logger.info("Orders created for already-succeeded payment:", {
             paymentId: payment._id,
-            orderIds
+            orderIds,
           });
         } catch (orderError) {
-          logger.error("Failed to create orders for already-succeeded payment:", {
-            paymentId: payment._id,
-            error: orderError.message
-          });
+          logger.error(
+            "Failed to create orders for already-succeeded payment:",
+            {
+              paymentId: payment._id,
+              error: orderError.message,
+            }
+          );
         }
       }
 
@@ -616,7 +693,9 @@ class PaymentService {
       // Check refund amount
       const refundAmount = amount || originalPayment.amount;
       if (refundAmount > originalPayment.amount) {
-        throw new ValidationError("Refund amount cannot exceed original payment amount");
+        throw new ValidationError(
+          "Refund amount cannot exceed original payment amount"
+        );
       }
 
       // Check for existing refunds
@@ -626,15 +705,22 @@ class PaymentService {
         status: { $in: ["succeeded", "processing"] },
       });
 
-      const totalRefunded = existingRefunds.reduce((sum, refund) => sum + refund.amount, 0);
+      const totalRefunded = existingRefunds.reduce(
+        (sum, refund) => sum + refund.amount,
+        0
+      );
       if (totalRefunded + refundAmount > originalPayment.amount) {
-        throw new ValidationError("Total refund amount would exceed original payment");
+        throw new ValidationError(
+          "Total refund amount would exceed original payment"
+        );
       }
 
       // Create refund with PayMongo
       const paymongoPaymentId = originalPayment.gatewayResponse?.data?.id;
       if (!paymongoPaymentId) {
-        throw new ValidationError("Original payment does not have a valid gateway payment ID");
+        throw new ValidationError(
+          "Original payment does not have a valid gateway payment ID"
+        );
       }
 
       // Prepare and flatten metadata for PayMongo API compatibility
@@ -642,9 +728,10 @@ class PaymentService {
         ...metadata,
         originalPaymentId: paymentId,
         refundReason: reason,
-        refundAmount: refundAmount.toString()
+        refundAmount: refundAmount.toString(),
       };
-      const flattenedRefundMetadata = flattenMetadataForPayMongo(rawRefundMetadata);
+      const flattenedRefundMetadata =
+        flattenMetadataForPayMongo(rawRefundMetadata);
 
       const refundResult = await paymongoClient.createRefund(
         paymongoPaymentId,
@@ -667,7 +754,9 @@ class PaymentService {
         status: "processing",
         refundId: refundResult.data.id,
         gatewayResponse: refundResult,
-        metadata: new Map(Object.entries({ ...metadata, originalPaymentId: paymentId })),
+        metadata: new Map(
+          Object.entries({ ...metadata, originalPaymentId: paymentId })
+        ),
       });
 
       await refundPayment.save();
@@ -704,18 +793,19 @@ class PaymentService {
       const sanitizedAmount = sanitizeMongoInput(amount);
 
       if (!sanitizedAmount || sanitizedAmount < 0) {
-        throw new ValidationError("Minimum cash-in amount is 0 PHP (0 centavos)");
+        throw new ValidationError(
+          "Minimum cash-in amount is 0 PHP (0 centavos)"
+        );
       }
-
-      if (sanitizedAmount > 10000000) {
-        throw new ValidationError("Maximum cash-in amount is 100,000 PHP");
+      if (sanitizedAmount > 100000) {
+        throw new ValidationError("Maximum cash-in amount is 10000 PHP");
       }
 
       // Prepare and flatten metadata for PayMongo API compatibility
       const rawMetadata = {
         userId: userId.toString(),
         type: "cash_in",
-        paymentMethod: paymentMethod
+        paymentMethod: paymentMethod,
       };
       const flattenedMetadata = flattenMetadataForPayMongo(rawMetadata);
 
@@ -732,8 +822,8 @@ class PaymentService {
         type: "cash_in",
         provider: "paymongo",
         amount: sanitizedAmount,
-        fee: Math.round(sanitizedAmount * 0.025), // 2.5% fee for wallet top-ups
-        netAmount: sanitizedAmount,
+        fee: Math.round(sanitizedAmount * 0.015), // 1.5% fee for wallet top-ups
+        netAmount: sanitizedAmount - Math.round(sanitizedAmount * 0.015),
         currency: "PHP",
         description: "Wallet Top-up",
         status: "awaiting_payment",
@@ -750,10 +840,15 @@ class PaymentService {
         amount: sanitizedAmount,
       });
 
+      // Extract QR code URL from gateway response if present (PayMongo next_action code)
+      const qrCodeUrl =
+        paymentIntent?.data?.attributes?.next_action?.code?.image_url || null;
+
       return {
         payment,
         clientKey: paymentIntent.data.attributes.client_key,
         paymentIntentId: paymentIntent.data.id,
+        qrCodeUrl,
       };
     } catch (error) {
       logger.error("Error creating cash-in:", error);
@@ -767,53 +862,309 @@ class PaymentService {
    * @param {Number} amount - Amount in centavos
    * @param {Object} bankAccount - Bank account details
    */
-  async createWithdrawal(vendorId, amount, bankAccount) {
+  async createWithdrawal(
+    vendorId,
+    amount,
+    bankAccount,
+    payoutMethod = "bank_transfer"
+  ) {
     try {
       const sanitizedAmount = sanitizeMongoInput(amount);
 
-      if (!sanitizedAmount || sanitizedAmount < 100000) {
-        throw new ValidationError("Minimum withdrawal amount is 1,000 PHP");
+      if (!sanitizedAmount || sanitizedAmount < 10000) {
+        throw new ValidationError("Minimum withdrawal amount is 100 PHP");
       }
-
-      // Validate bank account details
-      if (!bankAccount?.accountNumber || !bankAccount?.accountName || !bankAccount?.bankName) {
+      if (
+        !bankAccount?.accountNumber ||
+        !bankAccount?.accountName ||
+        !bankAccount?.bankName
+      ) {
         throw new ValidationError("Complete bank account details are required");
       }
 
-      // TODO: Check vendor balance and eligibility
-      // This would integrate with a wallet/balance system
+      // Check vendor wallet balance before allowing withdrawal
+      const Vendor = require("../vendors/vendors.model");
+      const vendor = await Vendor.findOne({ userId: vendorId });
+
+      if (!vendor) {
+        throw new ValidationError("Vendor not found");
+      }
+
+      const vendorBalance = vendor.accountBalance?.cash || 0;
+      const amountPhp = Number(sanitizedAmount) / 100;
+
+      if (vendorBalance < amountPhp) {
+        throw new ValidationError("Insufficient wallet balance for withdrawal");
+      }
+
+      // Calculate fee and net amount
+      const fee = Math.round(sanitizedAmount * 0.015); // 1.5% fee
+      const netAmount = Math.max(0, sanitizedAmount - fee);
+
+      // IMMEDIATELY deduct the full amount from vendor's embedded wallet
+      const newBalance = vendorBalance - amountPhp;
+      await Vendor.findOneAndUpdate(
+        { userId: vendorId },
+        {
+          $set: {
+            "accountBalance.cash": newBalance,
+            updatedAt: new Date(),
+          },
+        }
+      );
 
       // Create withdrawal payment record
       const payment = new Payment({
         userId: vendorId,
         type: "withdraw",
-        provider: "bank_transfer",
+        provider: sanitizeMongoInput(payoutMethod) || "bank_transfer",
         amount: sanitizedAmount,
-        fee: Math.round(sanitizedAmount * 0.02) + 2500, // 2% + 25 PHP fixed fee
-        netAmount: sanitizedAmount,
+        fee,
+        netAmount,
         currency: "PHP",
         description: "Vendor Withdrawal",
         status: "pending",
         bankAccount: {
           accountNumber: sanitizeMongoInput(bankAccount.accountNumber),
           accountName: sanitizeMongoInput(bankAccount.accountName),
-          bankName: sanitizeMongoInput(bankAccount.bankName),
+          bankName:
+            sanitizeMongoInput(bankAccount.bankName) ||
+            (payoutMethod === "gcash" ? "GCash" : ""),
         },
+        walletTransactionId: null, // Not using separate wallet collection
+        idempotencyKey: `withdrawal-${Date.now()}-${Math.random()
+          .toString(36)
+          .substr(2, 9)}`,
       });
 
       await payment.save();
 
-      logger.info("Withdrawal created:", {
+      logger.info("Withdrawal created with immediate wallet deduction:", {
         paymentId: payment._id,
         vendorId,
         amount: sanitizedAmount,
+        oldBalance: vendorBalance,
+        newBalance,
       });
 
-      // TODO: Trigger manual review/approval workflow
+      // Invalidate vendor cache after balance update
+      if (isRedisAvailable()) {
+        const { safeDel } = require("../../config/redis");
+        await safeDel(`vendor:${vendorId}`);
+      }
 
       return payment;
     } catch (error) {
       logger.error("Error creating withdrawal:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Cancel Withdrawal (Vendor)
+   * @param {ObjectId} vendorId - Vendor requesting cancellation
+   * @param {ObjectId} paymentId - Payment to cancel
+   * @param {String} reason - Optional reason for cancellation
+   */
+  async cancelWithdrawal(vendorId, paymentId, reason = "") {
+    try {
+      const payment = await Payment.findById(paymentId);
+      if (!payment) {
+        throw new NotFoundError("Payment not found");
+      }
+
+      if (payment.type !== "withdraw") {
+        throw new ValidationError("Payment is not a withdrawal");
+      }
+
+      if (payment.userId.toString() !== vendorId.toString()) {
+        throw new ValidationError("Access denied");
+      }
+
+      // Only pending withdrawals may be cancelled by vendor
+      if (payment.status !== "pending") {
+        throw new ValidationError("Only pending withdrawals can be cancelled");
+      }
+
+      // Refund the held amount back to vendor's embedded wallet
+      const Vendor = require("../vendors/vendors.model");
+      const amountPhp = Number(payment.amount) / 100;
+
+      await Vendor.findOneAndUpdate(
+        { userId: vendorId },
+        {
+          $inc: { "accountBalance.cash": amountPhp },
+          $set: { updatedAt: new Date() },
+        }
+      );
+
+      payment.status = "cancelled";
+      payment.isFinal = true;
+      payment.cancelledAt = new Date();
+      payment.failureReason = reason || "Cancelled by vendor";
+      await payment.save();
+
+      logger.info("Withdrawal cancelled with refund:", {
+        paymentId: payment._id,
+        vendorId,
+        refundAmount: amountPhp,
+      });
+
+      // Invalidate vendor cache after balance update
+      if (isRedisAvailable()) {
+        const { safeDel } = require("../../config/redis");
+        await safeDel(`vendor:${vendorId}`);
+      }
+
+      return payment;
+    } catch (error) {
+      logger.error("Error cancelling withdrawal:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Approve Withdrawal (Admin) - marks withdrawal as approved and processes payout
+   * @param {ObjectId} adminId - Admin performing approval
+   * @param {ObjectId} paymentId - Withdrawal payment to approve
+   * @param {Object} options - { adminProofUrl, payoutRef }
+   */
+  async approveWithdrawal(adminId, paymentId, options = {}) {
+    const { adminProofUrl = null, payoutRef = null } = options;
+
+    try {
+      const payment = await Payment.findById(paymentId);
+      if (!payment) {
+        throw new NotFoundError("Payment not found");
+      }
+      if (payment.type !== "withdraw") {
+        throw new ValidationError("Payment is not a withdrawal");
+      }
+      if (payment.status !== "pending") {
+        throw new ValidationError("Only pending withdrawals can be approved");
+      }
+      payment.status = "succeeded";
+      payment.isFinal = true;
+      payment.approvedBy = adminId;
+      payment.approvedAt = new Date();
+      payment.adminProofUrl = adminProofUrl;
+      payment.payoutRef = payoutRef;
+      await payment.save();
+
+      if (isRedisAvailable()) {
+        const { safeDel } = require("../../config/redis");
+        await safeDel(`vendor:${payment.userId}`);
+      }
+      return payment;
+    } catch (error) {
+      logger.error("Error approving withdrawal:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Reject Withdrawal (Admin)
+   * @param {ObjectId} adminId - Admin performing rejection
+   * @param {ObjectId} paymentId - Withdrawal payment to reject
+   * @param {String} reason - Reason for rejection
+   */
+  async rejectWithdrawal(adminId, paymentId, reason = "") {
+    try {
+      const payment = await Payment.findById(paymentId);
+      if (!payment) {
+        throw new NotFoundError("Payment not found");
+      }
+      if (payment.type !== "withdraw") {
+        throw new ValidationError("Payment is not a withdrawal");
+      }
+      if (payment.status !== "pending") {
+        throw new ValidationError("Only pending withdrawals can be rejected");
+      }
+
+      // Refund the held amount back to vendor's embedded wallet
+      const Vendor = require("../vendors/vendors.model");
+      const amountPhp = Number(payment.amount) / 100;
+
+      await Vendor.findOneAndUpdate(
+        { userId: payment.userId },
+        {
+          $inc: { "accountBalance.cash": amountPhp },
+          $set: { updatedAt: new Date() },
+        }
+      );
+
+      payment.status = "failed";
+      payment.isFinal = true;
+      payment.rejectedBy = adminId;
+      payment.rejectedAt = new Date();
+      payment.rejectionReason = reason || "Rejected by admin";
+      await payment.save();
+
+      logger.info("Withdrawal rejected with refund:", {
+        paymentId: payment._id,
+        adminId,
+        refundAmount: amountPhp,
+      });
+
+      return payment;
+    } catch (error) {
+      logger.error("Error rejecting withdrawal:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Update Withdrawal Status (Admin)
+   * Status may be 'pending', 'processing', 'succeeded', 'failed', 'cancelled'
+   */
+  async updateWithdrawalStatus(adminId, paymentId, status, options = {}) {
+    const { adminProofUrl = null, payoutRef = null, reason = null } = options;
+    try {
+      const payment = await Payment.findById(paymentId);
+      if (!payment) {
+        throw new NotFoundError("Payment not found");
+      }
+      if (payment.type !== "withdraw") {
+        throw new ValidationError("Payment is not a withdrawal");
+      }
+
+      // Map status actions
+      if (status === "succeeded") {
+        // Approve (this will perform wallet debit)
+        return await this.approveWithdrawal(adminId, paymentId, {
+          adminProofUrl,
+          payoutRef,
+        });
+      }
+
+      if (status === "failed" || status === "rejected") {
+        return await this.rejectWithdrawal(
+          adminId,
+          paymentId,
+          reason || "Rejected by admin"
+        );
+      }
+
+      // For manual statuses like 'processing' or 'pending' or 'cancelled'
+      payment.status = status;
+      if (adminProofUrl) payment.adminProofUrl = adminProofUrl;
+      if (payoutRef) payment.payoutRef = payoutRef;
+      // if marking cancelled, set isFinal
+      if (status === "cancelled") {
+        payment.isFinal = true;
+        payment.failureReason = reason || "Cancelled by admin";
+      }
+
+      await payment.save();
+
+      logger.info("Withdrawal status updated:", {
+        paymentId: payment._id,
+        adminId,
+        status,
+      });
+      return payment;
+    } catch (error) {
+      logger.error("Error updating withdrawal status:", error);
       throw error;
     }
   }
@@ -844,6 +1195,97 @@ class PaymentService {
   }
 
   /**
+   * Get withdrawals for admin review
+   * @param {String|null} status - optional status filter (pending, succeeded, failed)
+   * @param {Number} limit - results limit
+   */
+  async getWithdrawalsForAdmin(filters = {}) {
+    try {
+      const {
+        status = null,
+        vendorId = null,
+        dateFrom = null,
+        dateTo = null,
+        q = null,
+        page = 1,
+        limit = 50,
+      } = filters;
+
+      const query = { type: "withdraw" };
+      if (status) query.status = status;
+      if (vendorId) query["userId"] = vendorId;
+
+      if (dateFrom || dateTo) {
+        query.createdAt = {};
+        if (dateFrom) query.createdAt.$gte = new Date(dateFrom);
+        if (dateTo) query.createdAt.$lte = new Date(dateTo);
+      }
+
+      // Optional text search across vendor/store name will be handled after population
+      const skip = (parseInt(page) - 1) * parseInt(limit);
+
+      const [totalDocs, payments] = await Promise.all([
+        Payment.countDocuments(query),
+        Payment.find(query)
+          .sort({ createdAt: -1 })
+          .skip(skip)
+          .limit(parseInt(limit))
+          .select(
+            "_id userId amount status bankAccount provider createdAt adminProofUrl payoutRef reason updatedAt"
+          )
+          .populate("userId", "name email"),
+      ]);
+
+      // Attach vendor store info (storeName, isApproved) where available
+      let populated = await Promise.all(
+        payments.map(async (p) => {
+          const obj = p.toObject ? p.toObject() : p;
+          try {
+            const vendor = await Vendor.findOne({
+              userId: obj.userId?._id || obj.userId,
+            }).select("storeName isApproved gcashNumber");
+            obj.vendor = vendor
+              ? {
+                  storeName: vendor.storeName,
+                  isApproved: vendor.isApproved,
+                  gcashNumber: vendor.gcashNumber,
+                }
+              : null;
+          } catch (e) {
+            obj.vendor = null;
+          }
+          return obj;
+        })
+      );
+
+      // If a text query was provided, filter results client-side for now (could be improved with aggregation)
+      if (q) {
+        const qLower = String(q).toLowerCase();
+        populated = populated.filter((p) => {
+          const store = p.vendor?.storeName || "";
+          const user = p.userId?.name || p.userId?.email || "";
+          return store.toLowerCase().includes(qLower) || user.toLowerCase().includes(qLower) || (p.payoutRef || "").toLowerCase().includes(qLower);
+        });
+      }
+
+      const totalPages = Math.max(1, Math.ceil(totalDocs / parseInt(limit)));
+
+      return {
+        docs: populated,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        totalDocs,
+        totalPages,
+        hasNextPage: parseInt(page) < totalPages,
+        hasPrevPage: parseInt(page) > 1,
+      };
+    } catch (error) {
+      logger.error("Error fetching withdrawals for admin:", error);
+      throw new DatabaseError(error.message, "getWithdrawalsForAdmin");
+    }
+  }
+
+  /**
    * Create orders from payment checkout data
    * Groups items by vendor and creates separate orders for each
    * Uses non-transactional approach for better reliability on single-node MongoDB
@@ -852,7 +1294,7 @@ class PaymentService {
    */
   async createOrdersFromPayment(payment) {
     const createdOrderIds = [];
-    
+
     try {
       // Re-fetch payment to ensure we have latest data with populated fields
       const freshPayment = await Payment.findById(payment._id);
@@ -864,7 +1306,7 @@ class PaymentService {
       if (freshPayment.ordersCreated) {
         logger.info("Orders already created for this payment:", {
           paymentId: freshPayment._id,
-          orderIds: freshPayment.orderIds
+          orderIds: freshPayment.orderIds,
         });
         return freshPayment.orderIds || [];
       }
@@ -877,29 +1319,36 @@ class PaymentService {
           ordersCreated: false,
           $or: [
             { orderCreationError: { $ne: "in_progress" } },
-            { updatedAt: { $lt: staleLockCutoff } }
-          ]
+            { updatedAt: { $lt: staleLockCutoff } },
+          ],
         },
         { $set: { orderCreationError: "in_progress" } }
       );
 
-      const wasLocked = (lockResult.modifiedCount ?? lockResult.nModified ?? 0) > 0;
+      const wasLocked =
+        (lockResult.modifiedCount ?? lockResult.nModified ?? 0) > 0;
       if (!wasLocked) {
-        const existing = await Payment.findById(payment._id, "orderIds ordersCreated orderCreationError updatedAt");
-        logger.warn("Order creation skipped because another worker is handling it", {
-          paymentId: payment._id,
-          ordersCreated: existing?.ordersCreated,
-          orderIds: existing?.orderIds,
-          orderCreationError: existing?.orderCreationError,
-          updatedAt: existing?.updatedAt
-        });
+        const existing = await Payment.findById(
+          payment._id,
+          "orderIds ordersCreated orderCreationError updatedAt"
+        );
+        logger.warn(
+          "Order creation skipped because another worker is handling it",
+          {
+            paymentId: payment._id,
+            ordersCreated: existing?.ordersCreated,
+            orderIds: existing?.orderIds,
+            orderCreationError: existing?.orderCreationError,
+            updatedAt: existing?.updatedAt,
+          }
+        );
         return existing?.orderIds || [];
       }
 
       const checkoutData = freshPayment.checkoutData;
       const userId = freshPayment.userId;
       const paymentId = freshPayment._id;
-      
+
       // Validate checkout data exists
       if (!checkoutData) {
         logger.error("No checkout data in payment:", { paymentId });
@@ -907,11 +1356,17 @@ class PaymentService {
       }
 
       // Convert checkoutData to plain object if it's a Mongoose subdocument
-      const checkoutDataObj = checkoutData.toObject ? checkoutData.toObject() : 
-                              (typeof checkoutData === 'object' ? JSON.parse(JSON.stringify(checkoutData)) : checkoutData);
-      
+      const checkoutDataObj = checkoutData.toObject
+        ? checkoutData.toObject()
+        : typeof checkoutData === "object"
+        ? JSON.parse(JSON.stringify(checkoutData))
+        : checkoutData;
+
       if (!checkoutDataObj.items || checkoutDataObj.items.length === 0) {
-        logger.error("No items in checkout data:", { paymentId, checkoutData: checkoutDataObj });
+        logger.error("No items in checkout data:", {
+          paymentId,
+          checkoutData: checkoutDataObj,
+        });
         throw new ValidationError("No items found in checkout data");
       }
 
@@ -920,7 +1375,7 @@ class PaymentService {
         itemCount: checkoutDataObj.items.length,
         customerName: checkoutDataObj.customerName,
         hasShippingAddress: !!checkoutDataObj.shippingAddress,
-        shippingOption: checkoutDataObj.shippingOption
+        shippingOption: checkoutDataObj.shippingOption,
       });
 
       // Group items by vendor
@@ -929,15 +1384,17 @@ class PaymentService {
         // Handle vendorId whether it's a string, ObjectId, or object with _id
         let vendorId = null;
         if (item.vendorId) {
-          if (typeof item.vendorId === 'object' && item.vendorId._id) {
+          if (typeof item.vendorId === "object" && item.vendorId._id) {
             vendorId = item.vendorId._id.toString();
           } else {
             vendorId = item.vendorId.toString();
           }
         }
-        
+
         if (!vendorId) {
-          logger.warn("Item missing vendorId, skipping:", { item: JSON.stringify(item) });
+          logger.warn("Item missing vendorId, skipping:", {
+            item: JSON.stringify(item),
+          });
           continue;
         }
         if (!groupedItems[vendorId]) {
@@ -956,42 +1413,42 @@ class PaymentService {
         try {
           // Calculate subtotal for this vendor's items
           const subTotal = items.reduce((total, item) => {
-            return total + (Number(item.price || 0) * Number(item.quantity || 1));
+            return total + Number(item.price || 0) * Number(item.quantity || 1);
           }, 0);
 
           // Create order data
           const orderData = {
             customerId: userId,
             vendorId: vendorId,
-            items: items.map(item => ({
-              imgUrl: item.imgUrl || '',
-              label: item.label || '',
+            items: items.map((item) => ({
+              imgUrl: item.imgUrl || "",
+              label: item.label || "",
               quantity: item.quantity || 1,
               productId: item.productId,
               optionId: item.optionId || null,
               price: item.price,
-              name: item.name || ''
+              name: item.name || "",
             })),
-            name: checkoutDataObj.customerName || '',
-            shippingOption: checkoutDataObj.shippingOption || 'J&T',
+            name: checkoutDataObj.customerName || "",
+            shippingOption: checkoutDataObj.shippingOption || "J&T",
             shippingFee: checkoutDataObj.shippingFee || 0,
-            agreementDetails: checkoutDataObj.agreementDetails || '',
+            agreementDetails: checkoutDataObj.agreementDetails || "",
             subTotal,
-            paymentStatus: 'Paid',
+            paymentStatus: "Paid",
             shippingAddress: checkoutDataObj.shippingAddress || {},
             trackingNumber: generateTrackingNumber(),
-            paymentMethod: 'qrph',
+            paymentMethod: "qrph",
             paymentId: paymentId,
             paidAt: new Date(),
-            status: 'paid',
-            escrowStatus: 'held'
+            status: "paid",
+            escrowStatus: "held",
           };
 
           logger.info("Creating order for vendor:", {
             vendorId,
             itemCount: items.length,
             subTotal,
-            customerName: orderData.name
+            customerName: orderData.name,
           });
 
           // Create and save order
@@ -1003,7 +1460,7 @@ class PaymentService {
             orderId: savedOrder._id,
             vendorId,
             itemCount: items.length,
-            subTotal
+            subTotal,
           });
 
           // Update vendor revenue (non-critical, don't fail order creation)
@@ -1012,14 +1469,14 @@ class PaymentService {
           } catch (revenueError) {
             logger.error("Failed to update vendor revenue (non-critical):", {
               vendorId,
-              error: revenueError.message
+              error: revenueError.message,
             });
           }
         } catch (orderError) {
           logger.error("Failed to create order for vendor:", {
             vendorId,
             error: orderError.message,
-            stack: orderError.stack
+            stack: orderError.stack,
           });
           // Continue with other vendors even if one fails
         }
@@ -1030,28 +1487,38 @@ class PaymentService {
         await Payment.findByIdAndUpdate(paymentId, {
           orderIds: createdOrderIds,
           ordersCreated: true,
-          orderCreationError: null
+          orderCreationError: null,
         });
 
         // Update admin stats (non-critical)
         try {
           await Admin.updateOne(
             {},
-            { $inc: { totalOrders: createdOrderIds.length, newOrdersCount: createdOrderIds.length } }
+            {
+              $inc: {
+                totalOrders: createdOrderIds.length,
+                newOrdersCount: createdOrderIds.length,
+              },
+            }
           );
         } catch (adminError) {
-          logger.error("Failed to update admin stats (non-critical):", adminError.message);
+          logger.error(
+            "Failed to update admin stats (non-critical):",
+            adminError.message
+          );
         }
 
         // Invalidate user/vendor/order caches so newly created orders show immediately
         if (isRedisAvailable()) {
           try {
             const vendorIds = Object.keys(groupedItems);
-            const orderKeys = createdOrderIds.map(id => getOrderKey(id.toString()));
+            const orderKeys = createdOrderIds.map((id) =>
+              getOrderKey(id.toString())
+            );
             await safeDel([
               getUserOrdersKey(userId),
               ...vendorIds.map(getVendorOrdersKey),
-              ...orderKeys
+              ...orderKeys,
             ]);
 
             // Optionally clear product order caches if productId present
@@ -1059,7 +1526,9 @@ class PaymentService {
             for (const items of Object.values(groupedItems)) {
               for (const item of items) {
                 if (item.productId) {
-                  productKeys.push(getProductOrdersKey(item.productId.toString())) ;
+                  productKeys.push(
+                    getProductOrdersKey(item.productId.toString())
+                  );
                 }
               }
             }
@@ -1076,35 +1545,38 @@ class PaymentService {
         // Clear the user's cart after successful order creation - ONLY remove checked out items
         try {
           // Get the items that were checked out from the checkout data
-          const itemsToRemove = checkoutDataObj.items.map(item => ({
+          const itemsToRemove = checkoutDataObj.items.map((item) => ({
             productId: item.productId,
-            optionId: item.optionId || null
+            optionId: item.optionId || null,
           }));
-          
+
           await removeItemsFromCartService(userId, itemsToRemove);
-          logger.info("Checked out items removed from cart:", { 
-            userId, 
-            paymentId, 
-            removedItemCount: itemsToRemove.length 
-          });
-        } catch (cartError) {
-          logger.error("Failed to remove checked out items from cart (non-critical):", {
+          logger.info("Checked out items removed from cart:", {
             userId,
             paymentId,
-            error: cartError.message
+            removedItemCount: itemsToRemove.length,
           });
+        } catch (cartError) {
+          logger.error(
+            "Failed to remove checked out items from cart (non-critical):",
+            {
+              userId,
+              paymentId,
+              error: cartError.message,
+            }
+          );
         }
 
         logger.info("Orders created successfully from payment:", {
           paymentId,
           orderIds: createdOrderIds,
-          orderCount: createdOrderIds.length
+          orderCount: createdOrderIds.length,
         });
       } else {
         // No orders were created - this is a critical failure
         const errorMsg = "Failed to create any orders from payment";
         await Payment.findByIdAndUpdate(paymentId, {
-          orderCreationError: errorMsg
+          orderCreationError: errorMsg,
         });
         throw new Error(errorMsg);
       }
@@ -1114,19 +1586,22 @@ class PaymentService {
       logger.error("Error creating orders from payment:", {
         paymentId: payment._id,
         error: error.message,
-        stack: error.stack
+        stack: error.stack,
       });
-      
+
       // Store error in payment for debugging (and release lock)
       try {
         await Payment.findByIdAndUpdate(payment._id, {
           orderCreationError: error.message,
-          ordersCreated: false
+          ordersCreated: false,
         });
       } catch (updateError) {
-        logger.error("Failed to update payment with error:", updateError.message);
+        logger.error(
+          "Failed to update payment with error:",
+          updateError.message
+        );
       }
-      
+
       throw error;
     }
   }
@@ -1148,9 +1623,15 @@ class PaymentService {
       const paymentData = payload?.data?.attributes?.data;
       const paymentResourceId = paymentData?.id; // pay_xxx
       const paymentAttributes = paymentData?.attributes || {};
-      const paymentIntentId = paymentAttributes.payment_intent_id || paymentAttributes.payment_intent?.id;
+      const paymentIntentId =
+        paymentAttributes.payment_intent_id ||
+        paymentAttributes.payment_intent?.id;
 
-      logger.info("Processing webhook:", { eventType, paymentIntentId, paymentResourceId });
+      logger.info("Processing webhook:", {
+        eventType,
+        paymentIntentId,
+        paymentResourceId,
+      });
 
       // Find payment by intent ID (preferred) then fall back to payment resource id
       let payment = null;
@@ -1161,7 +1642,10 @@ class PaymentService {
         payment = await Payment.findOne({ chargeId: paymentResourceId });
       }
       if (!payment) {
-        logger.warn("Payment not found for webhook", { paymentIntentId, paymentResourceId });
+        logger.warn("Payment not found for webhook", {
+          paymentIntentId,
+          paymentResourceId,
+        });
         return;
       }
 
@@ -1178,27 +1662,31 @@ class PaymentService {
       switch (eventType) {
         case "payment.paid":
           await payment.markAsSucceeded(payload);
-          
+
           // Check if this is a QRPH payment with checkout data that needs order creation
-          if (payment.type === "checkout" && payment.checkoutData && !payment.ordersCreated) {
+          if (
+            payment.type === "checkout" &&
+            payment.checkoutData &&
+            !payment.ordersCreated
+          ) {
             logger.info("Creating orders from QRPH payment webhook:", {
               paymentId: payment._id,
               hasCheckoutData: !!payment.checkoutData,
-              itemCount: payment.checkoutData?.items?.length || 0
+              itemCount: payment.checkoutData?.items?.length || 0,
             });
-            
+
             try {
               // Create orders from stored checkout data
               const orderIds = await this.createOrdersFromPayment(payment);
-              
+
               logger.info("Orders created successfully via webhook:", {
                 paymentId: payment._id,
-                orderIds
+                orderIds,
               });
             } catch (orderError) {
               logger.error("Failed to create orders from webhook:", {
                 paymentId: payment._id,
-                error: orderError.message
+                error: orderError.message,
               });
               // Don't throw - webhook should still acknowledge receipt
               // Orders can be recovered manually via admin
@@ -1214,7 +1702,8 @@ class PaymentService {
           break;
 
         case "payment.failed":
-          const failureReason = payload.data.attributes.data.attributes.last_payment_error?.message;
+          const failureReason =
+            payload.data.attributes.data.attributes.last_payment_error?.message;
           await payment.markAsFailed(failureReason, payload);
           break;
 
@@ -1255,22 +1744,91 @@ class PaymentService {
       }
 
       if (payment.ordersCreated) {
-        throw new ConflictError("Orders have already been created for this payment");
+        throw new ConflictError(
+          "Orders have already been created for this payment"
+        );
       }
 
-      if (!payment.checkoutData || !payment.checkoutData.items || payment.checkoutData.items.length === 0) {
+      if (
+        !payment.checkoutData ||
+        !payment.checkoutData.items ||
+        payment.checkoutData.items.length === 0
+      ) {
         throw new ValidationError("No checkout data found in payment");
       }
 
       const orderIds = await this.createOrdersFromPayment(payment);
-      
+
       return {
         success: true,
         orderIds,
-        message: `${orderIds.length} order(s) created successfully`
+        message: `${orderIds.length} order(s) created successfully`,
       };
     } catch (error) {
       logger.error("Error recovering orders for payment:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get withdrawal history for a vendor with pagination
+   * @param {ObjectId} vendorId - Vendor ID
+   * @param {Object} options - Query options
+   * @param {number} options.page - Page number (1-based)
+   * @param {number} options.limit - Items per page
+   * @param {string} options.status - Filter by status (optional)
+   * @returns {Object} Paginated withdrawal results
+   */
+  async getVendorWithdrawals(
+    vendorId,
+    { page = 1, limit = 10, status = null }
+  ) {
+    try {
+      const query = {
+        userId: vendorId,
+        type: "withdraw",
+      };
+
+      if (status) {
+        query.status = status;
+      }
+
+      const skip = (page - 1) * limit;
+
+      const [withdrawals, totalWithdrawals] = await Promise.all([
+        Payment.find(query)
+          .populate("userId", "name email")
+          .sort({ createdAt: -1 })
+          .skip(skip)
+          .limit(limit)
+          .lean(),
+        Payment.countDocuments(query),
+      ]);
+
+      const totalPages = Math.ceil(totalWithdrawals / limit);
+
+      return {
+        withdrawals: withdrawals.map((withdrawal) => ({
+          _id: withdrawal._id,
+          amount: withdrawal.amount,
+          status: withdrawal.status,
+          provider: withdrawal.provider,
+          bankAccount: withdrawal.bankAccount,
+          createdAt: withdrawal.createdAt,
+          updatedAt: withdrawal.updatedAt,
+          adminProofUrl: withdrawal.adminProofUrl,
+          payoutRef: withdrawal.payoutRef,
+          reason: withdrawal.reason,
+          userId: withdrawal.userId,
+        })),
+        currentPage: page,
+        totalPages,
+        totalWithdrawals,
+        hasNextPage: page < totalPages,
+        hasPrevPage: page > 1,
+      };
+    } catch (error) {
+      logger.error("Error fetching vendor withdrawals:", error);
       throw error;
     }
   }

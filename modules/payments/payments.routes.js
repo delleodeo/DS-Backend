@@ -103,6 +103,18 @@ router.post(
 );
 
 /**
+ * @route   POST /api/payments/:paymentId/cancel-withdrawal
+ * @desc    Cancel a pending withdrawal (vendor only)
+ * @access  Private (Vendor)
+ */
+router.post(
+  "/:paymentId/cancel-withdrawal",
+  restrictTo("vendor"),
+  paymentValidator.validatePaymentId,
+  paymentController.cancelWithdrawal
+);
+
+/**
  * @route   GET /api/payments/my-payments
  * @desc    Get user's payment history
  * @access  Private (User, Vendor, Admin)
@@ -163,6 +175,64 @@ router.get(
   "/pending-orders",
   restrictTo("admin"),
   paymentController.getPendingOrderPayments
+);
+
+/**
+ * @route   POST /api/payments/:paymentId/approve
+ * @desc    Approve withdrawal (admin only)
+ * @access  Private (Admin)
+ */
+router.post(
+  "/:paymentId/approve",
+  restrictTo("admin"),
+  paymentValidator.validatePaymentId,
+  paymentController.approveWithdrawal
+);
+
+/**
+ * @route   POST /api/payments/:paymentId/reject
+ * @desc    Reject withdrawal (admin only)
+ * @access  Private (Admin)
+ */
+router.post(
+  "/:paymentId/reject",
+  restrictTo("admin"),
+  paymentValidator.validatePaymentId,
+  paymentController.rejectWithdrawal
+);
+
+/**
+ * @route   GET /api/payments/vendor/withdrawals
+ * @desc    Get withdrawal history for vendor
+ * @access  Private (Vendor)
+ */
+router.get(
+  "/vendor/withdrawals",
+  restrictTo("vendor"),
+  paymentController.getVendorWithdrawals
+);
+
+/**
+ * @route   GET /api/payments/admin/withdrawals
+ * @desc    Get withdrawals for admin review
+ * @access  Private (Admin)
+ */
+router.get(
+  "/admin/withdrawals",
+  restrictTo("admin"),
+  paymentController.getWithdrawalsForAdmin
+);
+
+/**
+ * @route   POST /api/payments/:paymentId/status
+ * @desc    Update withdrawal status (admin only)
+ * @access  Private (Admin)
+ */
+router.post(
+  "/:paymentId/status",
+  restrictTo("admin"),
+  paymentValidator.validatePaymentId,
+  paymentController.updateWithdrawalStatus
 );
 
 /**

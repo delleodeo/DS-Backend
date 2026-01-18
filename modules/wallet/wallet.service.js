@@ -3,7 +3,7 @@
  * Secure wallet operations with transaction management
  */
 const mongoose = require('mongoose');
-const Wallet = require('./wallet.model');
+const Wallet = require('./userWallet.model');
 const WalletTransaction = require('./walletTransaction.model');
 const User = require('../users/users.model');
 const { getAsync, setAsync, delAsync } = require('../../config/redis');

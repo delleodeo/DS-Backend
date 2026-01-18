@@ -166,6 +166,9 @@ OrderSchema.pre("save", function (next) {
 
     // For digital payments (wallet, gcash), mark commission as paid when order is delivered
     // For COD, commission remains pending until manually collected
+    if( this.paymentMethod === "wallet" || this.paymentMethod === "qrph") {
+      this.paymentStatus = "Paid";
+    }
     if (this.status === "delivered") {
       if (this.paymentMethod !== "cod" && this.commissionStatus === "pending") {
         this.commissionStatus = "paid";

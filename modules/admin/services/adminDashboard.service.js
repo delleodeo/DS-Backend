@@ -19,6 +19,9 @@ const { getRedisClient, isRedisAvailable, safeDel } = require('../../../config/r
 const redisClient = getRedisClient();
 const CACHE_TTL = 300; // 5 minutes
 
+// Product meta service for keeping category & municipality lists in sync with admin actions
+const productMetaService = require('../../products/productMeta.service');
+
 // Cache key helpers (aligned with orders.service)
 const getUserOrdersKey = (userId) => `orders:user:${userId}`;
 const getVendorOrdersKey = (vendorId) => `orders:vendor:${vendorId}`;
@@ -579,6 +582,13 @@ class ProductManagementService {
       notes: `Product "${product.name}" approved`
     }, req);
 
+    // Update product meta lists to include this product's categories/municipality
+    try {
+      await productMetaService.addProductMetadata(product);
+    } catch (err) {
+      console.error('[ProductMeta] add after approve failed:', err.message || err);
+    }
+
     return product;
   }
 
@@ -709,6 +719,13 @@ class ProductManagementService {
       notes: reason
     }, req);
 
+    // If product was approved before disabling, remove its metadata so it doesn't appear in lists
+    try {
+      await productMetaService.removeProductMetadata(product);
+    } catch (err) {
+      console.error('[ProductMeta] remove after disable failed:', err.message || err);
+    }
+
     return product;
   }
 
@@ -733,6 +750,15 @@ class ProductManagementService {
       newValues: { isDisabled: false }
     }, req);
 
+    // If product is approved and was re-enabled, re-add metadata
+    try {
+      if (product.isApproved || product.status === 'approved') {
+        await productMetaService.addProductMetadata(product);
+      }
+    } catch (err) {
+      console.error('[ProductMeta] add after enable failed:', err.message || err);
+    }
+
     return product;
   }
 
@@ -754,6 +780,13 @@ class ProductManagementService {
       previousValues: productData,
       notes: `Product "${productData.name}" deleted`
     }, req);
+
+    // Remove metadata for deleted product if it was counted before
+    try {
+      await productMetaService.removeProductMetadata(productData);
+    } catch (err) {
+      console.error('[ProductMeta] remove after delete failed:', err.message || err);
+    }
 
     return { success: true, deletedProduct: productData };
   }
@@ -777,6 +810,13 @@ class ProductManagementService {
       previousValues,
       newValues: updates
     }, req);
+
+    // Sync product meta for edits that may affect categories/municipality or approval state
+    try {
+      await productMetaService.handleProductUpdate(previousValues, product);
+    } catch (err) {
+      console.error('[ProductMeta] handle update after admin edit failed:', err.message || err);
+    }
 
     return product;
   }
@@ -1561,53 +1601,6 @@ class RefundService {
     return refund;
   }
 
-  static async approveRefund(refundId, adminId, adminEmail, notes, req) {
-    const refund = await RefundRequest.findById(refundId);
-    if (!refund) throw new Error('Refund request not found');
-    if (refund.status !== 'pending' && refund.status !== 'under_review') {
-      throw new Error('Refund request cannot be approved in current status');
-    }
-
-    // Sync order state so customers see the approved status
-    const order = await Order.findById(refund.orderId);
-    if (order) {
-      order.refundStatus = 'approved';
-      order.refundApprovedAt = new Date();
-      await order.save();
-
-      // Invalidate caches so customers see updated status immediately
-      if (isRedisAvailable()) {
-        const productKeys = order.items?.map((item) =>
-          getProductOrdersKey(item.orderProductId || item.productId)
-        ) || [];
-        await safeDel([
-          getOrderKey(order._id),
-          getUserOrdersKey(order.customerId),
-          getVendorOrdersKey(order.vendorId),
-          ...productKeys,
-        ]);
-      }
-    }
-
-    refund.status = 'approved';
-    refund.reviewedBy = adminId;
-    refund.reviewedAt = new Date();
-    refund.reviewNotes = notes;
-    refund.timeline.push({
-      status: 'approved',
-      message: `Refund approved by admin. ${notes || ''}`,
-      updatedBy: adminId
-    });
-    await refund.save();
-
-    await AuditService.log(adminId, adminEmail, 'REFUND_APPROVED', 'Refund', refundId, {
-      newValues: { status: 'approved' },
-      notes
-    }, req);
-
-    return refund;
-  }
-
   static async rejectRefund(refundId, reason, adminId, adminEmail, req) {
     const refund = await RefundRequest.findById(refundId);
     if (!refund) throw new Error('Refund request not found');
@@ -1657,6 +1650,7 @@ class RefundService {
   }
 
   static async processRefund(refundId, adminId) {
+    const userWalletData = require("../../wallet/userWallet.model")
     const refund = await RefundRequest.findById(refundId);
     if (!refund) throw new Error('Refund request not found');
     if (refund.status !== 'approved') {
@@ -1664,11 +1658,16 @@ class RefundService {
     }
 
     // Process the actual refund (wallet credit, etc.)
-    const customer = await User.findById(refund.customerId);
-    if (customer && refund.refundMethod === 'wallet') {
-      customer.wallet.cash += refund.totalRefundAmount;
-      await customer.save();
-    }
+    console.log("Customer id:", refund.customerId);
+    const userWallet = await userWalletData.getOrCreateForUser(refund.customerId);
+
+    if (!userWallet) throw new Error('Customer wallet not found');
+
+    if(refund.refundMethod !== 'wallet') throw new Error('Only wallet refunds are supported in this implementation');
+    
+    userWallet.balance += refund.totalRefundAmount;
+    await userWallet.save();
+
 
     // Update order so customer UI reflects processed state
     const order = await Order.findById(refund.orderId);
@@ -1704,9 +1703,7 @@ class RefundService {
   }
 }
 
-// ============================================
 // SYSTEM SETTINGS SERVICE
-// ============================================
 class SystemSettingsService {
   static async getSettings() {
     return SystemSettings.getSettings();

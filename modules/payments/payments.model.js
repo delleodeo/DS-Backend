@@ -143,6 +143,15 @@ const PaymentSchema = new mongoose.Schema(
       bankName: String
     },
 
+    // Admin/Approval audit fields for withdrawals
+    approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    approvedAt: Date,
+    rejectedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    rejectedAt: Date,
+    rejectionReason: String,
+    adminProofUrl: String,
+    payoutRef: String,
+
     // � Checkout Data for QRPH (stored for backend-driven order creation)
     // This allows webhook to create orders automatically when payment succeeds
     checkoutData: {

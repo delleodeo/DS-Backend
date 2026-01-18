@@ -178,6 +178,7 @@ exports.createCashIn = asyncHandler(async (req, res) => {
       fee: result.payment.fee,
       netAmount: result.payment.netAmount,
       status: result.payment.status,
+      qrCodeUrl: result.qrCodeUrl || null,
     },
   });
 });
@@ -188,10 +189,10 @@ exports.createCashIn = asyncHandler(async (req, res) => {
  * @access  Private (Vendor)
  */
 exports.createWithdrawal = asyncHandler(async (req, res) => {
-  const { amount, bankAccount } = req.body;
+  const { amount, bankAccount, payoutMethod } = req.body;
   const vendorId = req.user.id;
 
-  const payment = await paymentService.createWithdrawal(vendorId, amount, bankAccount);
+  const payment = await paymentService.createWithdrawal(vendorId, amount, bankAccount, payoutMethod);
 
   res.status(201).json({
     success: true,
@@ -202,12 +203,35 @@ exports.createWithdrawal = asyncHandler(async (req, res) => {
       fee: payment.fee,
       netAmount: payment.netAmount,
       status: payment.status,
+      provider: payment.provider,
       bankAccount: {
         accountName: payment.bankAccount.accountName,
         bankName: payment.bankAccount.bankName,
         // Don't expose full account number
         accountNumber: `****${payment.bankAccount.accountNumber.slice(-4)}`,
       },
+    },
+  });
+});
+
+/**
+ * @route   POST /api/payments/:paymentId/cancel-withdrawal
+ * @desc    Cancel a pending withdrawal (vendor only)
+ * @access  Private (Vendor)
+ */
+exports.cancelWithdrawal = asyncHandler(async (req, res) => {
+  const { paymentId } = req.params;
+  const vendorId = req.user.id;
+  const { reason } = req.body;
+
+  const payment = await paymentService.cancelWithdrawal(vendorId, paymentId, reason);
+
+  res.status(200).json({
+    success: true,
+    message: "Withdrawal cancelled successfully",
+    data: {
+      paymentId: payment._id,
+      status: payment.status,
     },
   });
 });
@@ -393,6 +417,97 @@ exports.getPendingOrderPayments = asyncHandler(async (req, res) => {
 });
 
 /**
+ * @route   GET /api/payments/admin/withdrawals
+ * @desc    Get withdrawals for admin review
+ * @access  Private (Admin)
+ */
+exports.getWithdrawalsForAdmin = asyncHandler(async (req, res) => {
+  const { status, vendorId, dateFrom, dateTo, q, page, limit } = req.query;
+  const result = await paymentService.getWithdrawalsForAdmin({ status, vendorId, dateFrom, dateTo, q, page: page || 1, limit: parseInt(limit) || 50 });
+
+  res.status(200).json({
+    success: true,
+    data: result.docs,
+    pagination: {
+      page: result.page,
+      limit: result.limit,
+      totalPages: result.totalPages,
+      totalDocs: result.totalDocs,
+      hasNextPage: result.hasNextPage,
+      hasPrevPage: result.hasPrevPage,
+    },
+  });
+});
+
+/**
+ * @route   POST /api/payments/:paymentId/status
+ * @desc    Update withdrawal status (admin only)
+ * @access  Private (Admin)
+ */
+exports.updateWithdrawalStatus = asyncHandler(async (req, res) => {
+  const { paymentId } = req.params;
+  const adminId = req.user.id;
+  const { status, adminProofUrl, payoutRef, reason } = req.body;
+
+  const payment = await paymentService.updateWithdrawalStatus(adminId, paymentId, status, { adminProofUrl, payoutRef, reason });
+
+  res.status(200).json({
+    success: true,
+    message: 'Withdrawal status updated',
+    data: {
+      paymentId: payment._id,
+      status: payment.status
+    }
+  });
+});
+
+/**
+ * @route   POST /api/payments/:paymentId/approve
+ * @desc    Approve withdrawal (admin only)
+ * @access  Private (Admin)
+ */
+exports.approveWithdrawal = asyncHandler(async (req, res) => {
+  const { paymentId } = req.params;
+  const adminId = req.user.id;
+  const { adminProofUrl, payoutRef } = req.body;
+
+  const payment = await paymentService.approveWithdrawal(adminId, paymentId, { adminProofUrl, payoutRef });
+
+  res.status(200).json({
+    success: true,
+    message: 'Withdrawal approved',
+    data: {
+      paymentId: payment._id,
+      status: payment.status,
+      approvedAt: payment.approvedAt
+    }
+  });
+});
+
+/**
+ * @route   POST /api/payments/:paymentId/reject
+ * @desc    Reject withdrawal (admin only)
+ * @access  Private (Admin)
+ */
+exports.rejectWithdrawal = asyncHandler(async (req, res) => {
+  const { paymentId } = req.params;
+  const adminId = req.user.id;
+  const { reason } = req.body;
+
+  const payment = await paymentService.rejectWithdrawal(adminId, paymentId, reason);
+
+  res.status(200).json({
+    success: true,
+    message: 'Withdrawal rejected',
+    data: {
+      paymentId: payment._id,
+      status: payment.status,
+      rejectedAt: payment.rejectedAt
+    }
+  });
+});
+
+/**
  * @route   GET /api/payments/:paymentId/qr/download
  * @desc    Download QR code for a payment
  * @access  Private (User - own payments only, Vendor, Admin)
@@ -532,4 +647,35 @@ exports.downloadQRCode = asyncHandler(async (req, res) => {
       message: "Failed to download QR code"
     });
   }
+});
+
+/**
+ * @route   GET /api/payments/vendor/withdrawals
+ * @desc    Get withdrawal history for vendor
+ * @access  Private (Vendor only)
+ */
+exports.getVendorWithdrawals = asyncHandler(async (req, res) => {
+  const vendorId = req.user.id;
+  const { page = 1, limit = 10, status } = req.query;
+
+  const result = await require("./payments.service").getVendorWithdrawals(
+    vendorId,
+    {
+      page: parseInt(page),
+      limit: parseInt(limit),
+      status
+    }
+  );
+
+  res.status(200).json({
+    success: true,
+    data: result.withdrawals,
+    pagination: {
+      currentPage: result.currentPage,
+      totalPages: result.totalPages,
+      totalWithdrawals: result.totalWithdrawals,
+      hasNextPage: result.hasNextPage,
+      hasPrevPage: result.hasPrevPage
+    }
+  });
 });

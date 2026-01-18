@@ -176,7 +176,7 @@ exports.validateCashIn = [
     .withMessage("Amount must be between 0 PHP and 100,000 PHP"),
   body("paymentMethod")
     .optional()
-    .isIn(["gcash", "card", "grab_pay", "paymaya"])
+    .isIn(["gcash", "card", "grab_pay", "paymaya", "qrph"])
     .withMessage("Invalid payment method"),
   validate,
 ];
@@ -188,8 +188,8 @@ exports.validateWithdrawal = [
   body("amount")
     .notEmpty()
     .withMessage("Amount is required")
-    .isInt({ min: 100000 })
-    .withMessage("Minimum withdrawal amount is 1,000 PHP (100000 centavos)"),
+    .isInt({ min: 10000 })
+    .withMessage("Minimum withdrawal amount is 100 PHP (10000 centavos)"),
   body("bankAccount")
     .notEmpty()
     .withMessage("Bank account details are required")
@@ -235,12 +235,20 @@ exports.validateGetPayments = [
  * Validator for payment ID param
  */
 exports.validatePaymentId = [
-  param("id")
-    .notEmpty()
-    .withMessage("Payment ID is required")
-    .isMongoId()
-    .withMessage("Invalid payment ID format"),
-  validate,
+  (req, res, next) => {
+    // Check if either id or paymentId parameter exists
+    const paymentId = req.params.id || req.params.paymentId;
+    if (!paymentId) {
+      throw new ValidationError("Validation failed", ["Payment ID is required"]);
+    }
+    if (!/^[0-9a-fA-F]{24}$/.test(paymentId)) {
+      throw new ValidationError("Validation failed", ["Invalid payment ID format"]);
+    }
+    // Set both id and paymentId for consistency across controllers
+    req.params.id = paymentId;
+    req.params.paymentId = paymentId;
+    next();
+  }
 ];
 
 /**

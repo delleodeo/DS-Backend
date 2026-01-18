@@ -20,6 +20,9 @@ const {
   deleteBatchFromCloudinary,
   extractPublicIdFromUrl,
 } = require("../upload/upload.service.js");
+
+// Product metadata service (keeps lightweight lists of categories & municipalities used by approved products)
+const productMetaService = require("./productMeta.service.js");
 const CacheUtils = require("./product-utils/cacheUtils.js");
 const {
   validateAndCleanPromotions,
@@ -124,6 +127,16 @@ async function createProductService(data) {
     await session.commitTransaction();
 
     await invalidateAllProductCaches(newProduct._id, newProduct.vendorId);
+
+    // If product is already approved at create time, add to product metadata lists
+    try {
+      if (newProduct.isApproved || newProduct.status === 'approved') {
+        await productMetaService.addProductMetadata(newProduct);
+      }
+    } catch (metaErr) {
+      logger.error('[ProductMeta] add on create failed:', metaErr);
+      // Do not fail the create operation because metadata update failed
+    }
 
     return newProduct;
   } catch (error) {
@@ -461,6 +474,9 @@ async function updateProductService(id, data) {
   const cacheKey = `products:${id}`;
   await cache.delete(cacheKey);
 
+  // Fetch previous product to compare changes for metadata updates
+  const prevProduct = await Product.findById(id);
+
   let updatedProduct = await Product.findByIdAndUpdate(id, data, {
     new: true,
     runValidators: true,
@@ -476,6 +492,14 @@ async function updateProductService(id, data) {
   if (wasModified) {
     // Save the changes if main image was auto-replaced
     await updatedProduct.save();
+  }
+
+  // Handle metadata diffs/approval transitions
+  try {
+    await productMetaService.handleProductUpdate(prevProduct, updatedProduct);
+  } catch (err) {
+    logger.error('[ProductMeta] handleProductUpdate failed:', err);
+    // don't let metadata failures break product updates
   }
 
   // Convert to plain object
@@ -688,6 +712,14 @@ async function deleteProductService(id) {
     await cache.delete(PRODUCT_BY_ID_KEY);
 
     await invalidateAllProductCaches(id, deletedProduct.vendorId);
+
+    // Update metadata lists to reflect deletion (only if product was counted before)
+    try {
+      await productMetaService.removeProductMetadata(deletedProduct);
+    } catch (metaErr) {
+      logger.error('[ProductMeta] remove on delete failed:', metaErr);
+      // Swallow metadata errors, deletion already succeeded
+    }
 
     logger.info(
       `[Product Delete] Successfully deleted product ${id} from database`

@@ -953,23 +953,6 @@ exports.getRefundDetails = async (req, res) => {
   }
 };
 
-exports.approveRefund = async (req, res) => {
-  try {
-    const { notes } = req.body;
-    const refund = await RefundService.approveRefund(
-      req.params.refundId,
-      req.user.id,
-      req.user.email,
-      notes,
-      req
-    );
-    res.json({ success: true, message: 'Refund approved successfully', data: refund });
-  } catch (error) {
-    console.error('Approve Refund Error:', error);
-    res.status(400).json({ success: false, error: error.message });
-  }
-};
-
 exports.rejectRefund = async (req, res) => {
   try {
     const { reason } = req.body;

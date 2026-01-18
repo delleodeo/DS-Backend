@@ -1,7 +1,4 @@
-/**
- * COD Commission Model
- * Tracks pending commissions from Cash On Delivery orders that sellers need to remit
- */
+
 const mongoose = require('mongoose');
 
 const commissionSchema = new mongoose.Schema({
@@ -41,7 +38,7 @@ const commissionSchema = new mongoose.Schema({
     required: true,
     min: 0,
     max: 100,
-    default: 5 // 5% default commission rate
+    default: 7 // 7% default commission rate
   },
   
   commissionAmount: {
