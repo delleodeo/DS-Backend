@@ -54,7 +54,7 @@ const walletSchema = new mongoose.Schema({
     amount: Number,
     description: String,
     date: { type: Date, default: Date.now },
-    reference: mongoose.Schema.Types.ObjectId
+    reference: String
   }]
 }, {
   timestamps: true

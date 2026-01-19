@@ -1,9 +1,6 @@
 const { body, param, query, validationResult } = require("express-validator");
 const { ValidationError } = require("../utils/errorHandler");
 
-/**
- * Middleware to check validation results
- */
 const validate = (req, res, next) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
@@ -13,16 +10,8 @@ const validate = (req, res, next) => {
   next();
 };
 
-/**
- * Validator for creating checkout payment
- * Note: orderId is optional when paymentMethod is 'qrph'
- * For QRPH payments, checkoutData is required instead
- */
 exports.validateCheckoutPayment = [
-  body("orderId")
-    .optional()
-    .isMongoId()
-    .withMessage("Invalid order ID format"),
+  body("orderId").optional().isMongoId().withMessage("Invalid order ID format"),
   body("amount")
     .notEmpty()
     .withMessage("Amount is required")
@@ -33,20 +22,13 @@ exports.validateCheckoutPayment = [
     .trim()
     .isLength({ max: 500 })
     .withMessage("Description must not exceed 500 characters"),
-  body("metadata")
-    .optional()
-    .isObject()
-    .withMessage("Metadata must be an object"),
+  body("metadata").optional().isObject().withMessage("Metadata must be an object"),
   body("paymentMethod")
     .optional()
     .trim()
     .isIn(["qrph", "gcash", "card", "grab_pay", "maya"])
     .withMessage("Invalid payment method"),
-  // Checkout data validation for QRPH payments
-  body("checkoutData")
-    .optional()
-    .isObject()
-    .withMessage("Checkout data must be an object"),
+  body("checkoutData").optional().isObject().withMessage("Checkout data must be an object"),
   body("checkoutData.items")
     .optional()
     .isArray({ min: 1 })
@@ -81,93 +63,53 @@ exports.validateCheckoutPayment = [
     .optional()
     .isObject()
     .withMessage("Shipping address must be an object"),
-  // Custom validation: require orderId unless paymentMethod is 'qrph'
   body("orderId").custom((value, { req }) => {
     if (req.body.paymentMethod !== "qrph" && !value) {
       throw new Error("Order ID is required for non-QRPH payments");
     }
     return true;
   }),
-  // Custom validation: require checkoutData for QRPH payments
   body("checkoutData").custom((value, { req }) => {
     if (req.body.paymentMethod === "qrph" && !req.body.orderId) {
-      if (!value) {
-        throw new Error("Checkout data is required for QRPH payments");
-      }
-      if (!value.items || value.items.length === 0) {
-        throw new Error("Checkout data must contain at least one item");
-      }
-      if (!value.customerName) {
-        throw new Error("Customer name is required in checkout data");
-      }
-      if (!value.phone) {
-        throw new Error("Phone number is required in checkout data");
-      }
+      if (!value) throw new Error("Checkout data is required for QRPH payments");
+      if (!value.items || value.items.length === 0) throw new Error("Checkout data must contain at least one item");
+      if (!value.customerName) throw new Error("Customer name is required in checkout data");
+      if (!value.phone) throw new Error("Phone number is required in checkout data");
     }
     return true;
   }),
   validate,
 ];
 
-/**
- * Validator for attaching payment method
- */
 exports.validateAttachPaymentMethod = [
-  body("paymentIntentId")
-    .notEmpty()
-    .withMessage("Payment Intent ID is required")
-    .trim(),
-  body("paymentMethodId")
-    .notEmpty()
-    .withMessage("Payment Method ID is required")
-    .trim(),
-  body("returnUrl")
-    .optional()
-    .isURL()
-    .withMessage("Return URL must be a valid URL"),
+  body("paymentIntentId").notEmpty().withMessage("Payment Intent ID is required").trim(),
+  body("paymentMethodId").notEmpty().withMessage("Payment Method ID is required").trim(),
+  body("returnUrl").optional().isURL().withMessage("Return URL must be a valid URL"),
   validate,
 ];
 
-/**
- * Validator for checking payment status
- */
 exports.validatePaymentIntentId = [
-  param("paymentIntentId")
-    .notEmpty()
-    .withMessage("Payment Intent ID is required")
-    .trim(),
+  param("paymentIntentId").notEmpty().withMessage("Payment Intent ID is required").trim(),
   validate,
 ];
 
-/**
- * Validator for creating refund
- */
 exports.validateRefund = [
   body("paymentId")
     .notEmpty()
     .withMessage("Payment ID is required")
     .isMongoId()
     .withMessage("Invalid payment ID format"),
-  body("amount")
-    .optional()
-    .isInt({ min: 1 })
-    .withMessage("Refund amount must be at least 1 centavo"),
+  body("amount").optional().isInt({ min: 1 }).withMessage("Refund amount must be at least 1 centavo"),
   body("reason")
     .notEmpty()
     .withMessage("Refund reason is required")
     .trim()
     .isLength({ max: 500 })
     .withMessage("Reason must not exceed 500 characters"),
-  body("metadata")
-    .optional()
-    .isObject()
-    .withMessage("Metadata must be an object"),
+  body("metadata").optional().isObject().withMessage("Metadata must be an object"),
   validate,
 ];
 
-/**
- * Validator for cash-in payment
- */
 exports.validateCashIn = [
   body("amount")
     .notEmpty()
@@ -181,26 +123,29 @@ exports.validateCashIn = [
   validate,
 ];
 
-/**
- * Validator for withdrawal request
- */
 exports.validateWithdrawal = [
   body("amount")
     .notEmpty()
     .withMessage("Amount is required")
     .isInt({ min: 10000 })
     .withMessage("Minimum withdrawal amount is 100 PHP (10000 centavos)"),
+  body("payoutMethod")
+    .optional()
+    .trim()
+    .toLowerCase()
+    .isIn(["gcash", "paymaya"])
+    .withMessage("Withdrawal payout method must be GCash or PayMaya"),
   body("bankAccount")
     .notEmpty()
-    .withMessage("Bank account details are required")
+    .withMessage("Payout details are required")
     .isObject()
-    .withMessage("Bank account must be an object"),
+    .withMessage("Payout details must be an object"),
   body("bankAccount.accountNumber")
     .notEmpty()
-    .withMessage("Account number is required")
+    .withMessage("Mobile number is required")
     .trim()
-    .isLength({ min: 10, max: 20 })
-    .withMessage("Invalid account number length"),
+    .matches(/^(?:\+63|63|0)9\d{9}$/)
+    .withMessage("Invalid PH mobile number (use 09XXXXXXXXX or +639XXXXXXXXX)"),
   body("bankAccount.accountName")
     .notEmpty()
     .withMessage("Account name is required")
@@ -208,35 +153,29 @@ exports.validateWithdrawal = [
     .isLength({ min: 2, max: 100 })
     .withMessage("Account name must be between 2 and 100 characters"),
   body("bankAccount.bankName")
-    .notEmpty()
-    .withMessage("Bank name is required")
+    .optional()
     .trim()
-    .isLength({ min: 2, max: 100 })
-    .withMessage("Bank name must be between 2 and 100 characters"),
+    .custom((value, { req }) => {
+      const method = String(req.body.payoutMethod || "").toLowerCase();
+      if (!method) return true;
+      const expected = method === "gcash" ? "gcash" : "paymaya";
+      if (!value) return true;
+      if (String(value).toLowerCase() !== expected) {
+        throw new Error("bankName must match payout method (GCash/PayMaya)");
+      }
+      return true;
+    }),
   validate,
 ];
 
-/**
- * Validator for getting user payments
- */
 exports.validateGetPayments = [
-  query("type")
-    .optional()
-    .isIn(["checkout", "refund", "withdraw", "cash_in"])
-    .withMessage("Invalid payment type"),
-  query("limit")
-    .optional()
-    .isInt({ min: 1, max: 100 })
-    .withMessage("Limit must be between 1 and 100"),
+  query("type").optional().isIn(["checkout", "refund", "withdraw", "cash_in"]).withMessage("Invalid payment type"),
+  query("limit").optional().isInt({ min: 1, max: 100 }).withMessage("Limit must be between 1 and 100"),
   validate,
 ];
 
-/**
- * Validator for payment ID param
- */
 exports.validatePaymentId = [
   (req, res, next) => {
-    // Check if either id or paymentId parameter exists
     const paymentId = req.params.id || req.params.paymentId;
     if (!paymentId) {
       throw new ValidationError("Validation failed", ["Payment ID is required"]);
@@ -244,25 +183,14 @@ exports.validatePaymentId = [
     if (!/^[0-9a-fA-F]{24}$/.test(paymentId)) {
       throw new ValidationError("Validation failed", ["Invalid payment ID format"]);
     }
-    // Set both id and paymentId for consistency across controllers
     req.params.id = paymentId;
     req.params.paymentId = paymentId;
     next();
-  }
+  },
 ];
 
-/**
- * Validator for cancelling payment
- */
 exports.validateCancelPayment = [
-  param("paymentIntentId")
-    .notEmpty()
-    .withMessage("Payment Intent ID is required")
-    .trim(),
-  body("reason")
-    .optional()
-    .trim()
-    .isLength({ max: 500 })
-    .withMessage("Reason must not exceed 500 characters"),
+  param("paymentIntentId").notEmpty().withMessage("Payment Intent ID is required").trim(),
+  body("reason").optional().trim().isLength({ max: 500 }).withMessage("Reason must not exceed 500 characters"),
   validate,
 ];

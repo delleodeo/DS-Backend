@@ -445,12 +445,10 @@ describe("Payment Service", () => {
       expect(result.clientKey).toBe("cashin_client_key");
     });
 
-    it("should allow zero amount for cash-in payment", async () => {
-      const result = await paymentService.createCashIn(mockUserId, 0, "gcash");
-
-      expect(result).toBeDefined();
-      expect(result.payment).toBeDefined();
-      expect(result.payment.amount).toBe(0);
+    it("should NOT allow zero amount for cash-in payment (minimum 1 PHP)", async () => {
+      await expect(paymentService.createCashIn(mockUserId, 0, "gcash")).rejects.toThrow(
+        "Minimum cash-in amount is 1 PHP (100 centavos)"
+      );
     });
 
     it("should throw error if amount is too high", async () => {
@@ -649,6 +647,64 @@ describe("Payment Service", () => {
       const updatedPayment = await Payment.findById(payment._id);
       expect(updatedPayment.status).toBe("succeeded");
       expect(updatedPayment.webhookReceived).toBe(true);
+    });
+
+    it("should credit vendor wallet when cash-in payment succeeds via webhook", async () => {
+      const vendorId = new mongoose.Types.ObjectId();
+      const amountCentavos = 10000; // ₱100.00
+
+      // Mock paymongo responses for createCashIn
+      paymongoClient.createPaymentIntent.mockResolvedValue({
+        data: {
+          id: "pi_cashin123",
+          attributes: {
+            client_key: "ck_test",
+            status: "awaiting_payment_method",
+            next_action: {
+              code: { image_url: "https://qr.test/cashin" }
+            }
+          }
+        }
+      });
+
+      // Create cash-in payment
+      const result = await paymentService.createCashIn(vendorId, amountCentavos, "gcash");
+      expect(result.payment).toBeDefined();
+      expect(result.payment.paymentIntentId).toBe("pi_cashin123");
+
+      // Simulate webhook
+      const webhookPayload = {
+        data: {
+          attributes: {
+            type: "payment.paid",
+            data: {
+              id: "ch_cashin_1",
+              attributes: {
+                id: "ch_cashin_1",
+                status: "succeeded",
+                payment_intent_id: "pi_cashin123",
+              },
+            },
+          },
+        },
+      };
+
+      paymongoClient.verifyWebhookSignature.mockReturnValue(true);
+
+      await paymentService.processWebhook(webhookPayload, "sig_test");
+
+      const paymentAfter = await Payment.findByIntent("pi_cashin123");
+      expect(paymentAfter.status).toBe("succeeded");
+
+      const VendorWallet = require("../modules/wallet/vendorWallet.model");
+      const wallet = await VendorWallet.findOne({ user: vendorId });
+      expect(wallet).toBeDefined();
+
+      const netCentavos = paymentAfter.netAmount;
+      const netPhp = netCentavos / 100;
+      const balance = Number(wallet.balance);
+      expect(balance).toBeCloseTo(netPhp);
+      expect(paymentAfter.walletCredited).toBe(true);
     });
   });
 });

@@ -14,11 +14,18 @@ const axios = require("axios");
  * @access  Private (User)
  */
 exports.createCheckoutPayment = asyncHandler(async (req, res) => {
-  const { orderId, amount, description, metadata, paymentMethod, checkoutData } = req.body;
+  const {
+    orderId,
+    amount,
+    description,
+    metadata,
+    paymentMethod,
+    checkoutData,
+  } = req.body;
   const userId = req.user.id;
 
   // Check if this is a QRPH payment (pre-order payment)
-  if (paymentMethod === 'qrph' && !orderId) {
+  if (paymentMethod === "qrph" && !orderId) {
     // Validate checkoutData is provided for QRPH payments
     if (!checkoutData) {
       throw new ValidationError("Checkout data is required for QRPH payments");
@@ -32,7 +39,7 @@ exports.createCheckoutPayment = asyncHandler(async (req, res) => {
       amount,
       description,
       metadata,
-      checkoutData
+      checkoutData,
     );
 
     return res.status(201).json({
@@ -55,7 +62,7 @@ exports.createCheckoutPayment = asyncHandler(async (req, res) => {
     orderId,
     amount,
     description,
-    metadata
+    metadata,
   );
 
   res.status(201).json({
@@ -85,7 +92,7 @@ exports.attachPaymentMethod = asyncHandler(async (req, res) => {
     userId,
     paymentIntentId,
     paymentMethodId,
-    returnUrl
+    returnUrl,
   );
 
   res.status(200).json({
@@ -141,7 +148,7 @@ exports.createRefund = asyncHandler(async (req, res) => {
     paymentId,
     amount,
     reason,
-    metadata
+    metadata,
   );
 
   res.status(201).json({
@@ -158,14 +165,23 @@ exports.createRefund = asyncHandler(async (req, res) => {
 
 /**
  * @route   POST /api/payments/cash-in
- * @desc    Create cash-in payment (wallet top-up)
+ * @desc    Create cash-in payment (wallet top-up)  
  * @access  Private (User)
  */
 exports.createCashIn = asyncHandler(async (req, res) => {
   const { amount, paymentMethod } = req.body;
   const userId = req.user.id;
+  const idempotencyKey =
+    req.get("Idempotency-Key") ||
+    req.headers["idempotency-key"] ||
+    req.headers["x-idempotency-key"];
 
-  const result = await paymentService.createCashIn(userId, amount, paymentMethod);
+  const result = await paymentService.createCashIn(
+    userId,
+    amount,
+    paymentMethod,
+    idempotencyKey,
+  );
 
   res.status(201).json({
     success: true,
@@ -190,9 +206,18 @@ exports.createCashIn = asyncHandler(async (req, res) => {
  */
 exports.createWithdrawal = asyncHandler(async (req, res) => {
   const { amount, bankAccount, payoutMethod } = req.body;
+  const headerKey = req.get("Idempotency-Key");
+  const idempotencyKey = headerKey;
+
   const vendorId = req.user.id;
 
-  const payment = await paymentService.createWithdrawal(vendorId, amount, bankAccount, payoutMethod);
+  const payment = await paymentService.createWithdrawal(
+    vendorId,
+    amount,
+    bankAccount,
+    payoutMethod,
+    idempotencyKey,
+  );
 
   res.status(201).json({
     success: true,
@@ -207,7 +232,6 @@ exports.createWithdrawal = asyncHandler(async (req, res) => {
       bankAccount: {
         accountName: payment.bankAccount.accountName,
         bankName: payment.bankAccount.bankName,
-        // Don't expose full account number
         accountNumber: `****${payment.bankAccount.accountNumber.slice(-4)}`,
       },
     },
@@ -224,7 +248,11 @@ exports.cancelWithdrawal = asyncHandler(async (req, res) => {
   const vendorId = req.user.id;
   const { reason } = req.body;
 
-  const payment = await paymentService.cancelWithdrawal(vendorId, paymentId, reason);
+  const payment = await paymentService.cancelWithdrawal(
+    vendorId,
+    paymentId,
+    reason,
+  );
 
   res.status(200).json({
     success: true,
@@ -248,7 +276,7 @@ exports.getMyPayments = asyncHandler(async (req, res) => {
   const payments = await paymentService.getUserPayments(
     userId,
     type,
-    parseInt(limit) || 50
+    parseInt(limit) || 50,
   );
 
   res.status(200).json({
@@ -283,7 +311,10 @@ exports.getPaymentById = asyncHandler(async (req, res) => {
   const userId = req.user.id;
 
   const Payment = require("./payments.model");
-  const payment = await Payment.findById(id).populate("orderId", "items subTotal status");
+  const payment = await Payment.findById(id).populate(
+    "orderId",
+    "items subTotal status",
+  );
 
   if (!payment) {
     return res.status(404).json({
@@ -390,28 +421,30 @@ exports.recoverOrdersForPayment = asyncHandler(async (req, res) => {
  */
 exports.getPendingOrderPayments = asyncHandler(async (req, res) => {
   const Payment = require("./payments.model");
-  
+
   const payments = await Payment.find({
     type: "checkout",
     status: "succeeded",
     ordersCreated: false,
-    checkoutData: { $exists: true, $ne: null }
+    checkoutData: { $exists: true, $ne: null },
   })
     .sort({ createdAt: -1 })
     .limit(100)
-    .select("_id userId amount status createdAt checkoutData.customerName checkoutData.items");
+    .select(
+      "_id userId amount status createdAt checkoutData.customerName checkoutData.items",
+    );
 
   res.status(200).json({
     success: true,
     count: payments.length,
-    data: payments.map(p => ({
+    data: payments.map((p) => ({
       paymentId: p._id,
       userId: p.userId,
       amount: p.amount / 100,
       status: p.status,
       customerName: p.checkoutData?.customerName,
       itemCount: p.checkoutData?.items?.length || 0,
-      createdAt: p.createdAt
+      createdAt: p.createdAt,
     })),
   });
 });
@@ -423,7 +456,15 @@ exports.getPendingOrderPayments = asyncHandler(async (req, res) => {
  */
 exports.getWithdrawalsForAdmin = asyncHandler(async (req, res) => {
   const { status, vendorId, dateFrom, dateTo, q, page, limit } = req.query;
-  const result = await paymentService.getWithdrawalsForAdmin({ status, vendorId, dateFrom, dateTo, q, page: page || 1, limit: parseInt(limit) || 50 });
+  const result = await paymentService.getWithdrawalsForAdmin({
+    status,
+    vendorId,
+    dateFrom,
+    dateTo,
+    q,
+    page: page || 1,
+    limit: parseInt(limit) || 50,
+  });
 
   res.status(200).json({
     success: true,
@@ -449,15 +490,20 @@ exports.updateWithdrawalStatus = asyncHandler(async (req, res) => {
   const adminId = req.user.id;
   const { status, adminProofUrl, payoutRef, reason } = req.body;
 
-  const payment = await paymentService.updateWithdrawalStatus(adminId, paymentId, status, { adminProofUrl, payoutRef, reason });
+  const payment = await paymentService.updateWithdrawalStatus(
+    adminId,
+    paymentId,
+    status,
+    { adminProofUrl, payoutRef, reason },
+  );
 
   res.status(200).json({
     success: true,
-    message: 'Withdrawal status updated',
+    message: "Withdrawal status updated",
     data: {
       paymentId: payment._id,
-      status: payment.status
-    }
+      status: payment.status,
+    },
   });
 });
 
@@ -471,16 +517,19 @@ exports.approveWithdrawal = asyncHandler(async (req, res) => {
   const adminId = req.user.id;
   const { adminProofUrl, payoutRef } = req.body;
 
-  const payment = await paymentService.approveWithdrawal(adminId, paymentId, { adminProofUrl, payoutRef });
+  const payment = await paymentService.approveWithdrawal(adminId, paymentId, {
+    adminProofUrl,
+    payoutRef,
+  });
 
   res.status(200).json({
     success: true,
-    message: 'Withdrawal approved',
+    message: "Withdrawal approved",
     data: {
       paymentId: payment._id,
       status: payment.status,
-      approvedAt: payment.approvedAt
-    }
+      approvedAt: payment.approvedAt,
+    },
   });
 });
 
@@ -494,16 +543,20 @@ exports.rejectWithdrawal = asyncHandler(async (req, res) => {
   const adminId = req.user.id;
   const { reason } = req.body;
 
-  const payment = await paymentService.rejectWithdrawal(adminId, paymentId, reason);
+  const payment = await paymentService.rejectWithdrawal(
+    adminId,
+    paymentId,
+    reason,
+  );
 
   res.status(200).json({
     success: true,
-    message: 'Withdrawal rejected',
+    message: "Withdrawal rejected",
     data: {
       paymentId: payment._id,
       status: payment.status,
-      rejectedAt: payment.rejectedAt
-    }
+      rejectedAt: payment.rejectedAt,
+    },
   });
 });
 
@@ -521,92 +574,98 @@ exports.downloadQRCode = asyncHandler(async (req, res) => {
     // Get payment details with ownership verification
     const Payment = require("./payments.model");
     const payment = await Payment.findById(paymentId);
-    
+
     if (!payment) {
       return res.status(404).json({
         success: false,
-        message: "Payment not found"
+        message: "Payment not found",
       });
     }
 
     // Check ownership (unless admin)
-    if (userRole !== 'admin' && payment.userId.toString() !== userId.toString()) {
+    if (
+      userRole !== "admin" &&
+      payment.userId.toString() !== userId.toString()
+    ) {
       return res.status(403).json({
         success: false,
-        message: "Access denied"
+        message: "Access denied",
       });
     }
 
     // Check if payment has QR code (QRPH payments only)
-    if (payment.metadata?.get('paymentMethod') !== 'qrph') {
+    if (payment.metadata?.get("paymentMethod") !== "qrph") {
       return res.status(400).json({
         success: false,
-        message: "QR code download is only available for QRPH payments"
+        message: "QR code download is only available for QRPH payments",
       });
     }
 
     // Check if payment is still valid for download (not expired or too old)
     const paymentAge = Date.now() - new Date(payment.createdAt).getTime();
     const maxAge = 24 * 60 * 60 * 1000; // 24 hours
-    
+
     if (paymentAge > maxAge) {
       return res.status(410).json({
         success: false,
-        message: "QR code is no longer available for download (expired)"
+        message: "QR code is no longer available for download (expired)",
       });
     }
 
     // Get QR code URL from PayMongo or generate fallback
     let qrCodeUrl;
-    
-    if (payment.gatewayResponse?.data?.attributes?.next_action?.code?.image_url) {
-      qrCodeUrl = payment.gatewayResponse.data.attributes.next_action.code.image_url;
+
+    if (
+      payment.gatewayResponse?.data?.attributes?.next_action?.code?.image_url
+    ) {
+      qrCodeUrl =
+        payment.gatewayResponse.data.attributes.next_action.code.image_url;
     } else {
       // Fallback: generate QR code using the payment intent ID
       qrCodeUrl = paymentService.generateQRCodeUrl(
         payment.paymentIntentId,
-        payment.gatewayResponse?.data?.attributes?.client_key
+        payment.gatewayResponse?.data?.attributes?.client_key,
       );
     }
 
     if (!qrCodeUrl) {
       return res.status(404).json({
         success: false,
-        message: "QR code not available for this payment"
+        message: "QR code not available for this payment",
       });
     }
 
     // Fetch QR code image
     const response = await axios.get(qrCodeUrl, {
-      responseType: 'arraybuffer',
+      responseType: "arraybuffer",
       timeout: 10000,
       headers: {
-        'User-Agent': 'DShop-QR-Downloader/1.0'
-      }
+        "User-Agent": "DShop-QR-Downloader/1.0",
+      },
     });
 
     // Determine file extension from content type
-    const contentType = response.headers['content-type'] || 'image/png';
-    let fileExtension = '.png';
-    
-    if (contentType.includes('jpeg') || contentType.includes('jpg')) {
-      fileExtension = '.jpg';
-    } else if (contentType.includes('svg')) {
-      fileExtension = '.svg';
+    const contentType = response.headers["content-type"] || "image/png";
+    let fileExtension = ".png";
+
+    if (contentType.includes("jpeg") || contentType.includes("jpg")) {
+      fileExtension = ".jpg";
+    } else if (contentType.includes("svg")) {
+      fileExtension = ".svg";
     }
 
     // Generate filename with payment info
-    const paymentDate = new Date(payment.createdAt).toISOString().split('T')[0];
+    const paymentDate = new Date(payment.createdAt).toISOString().split("T")[0];
     const filename = `QRPH-Payment-${payment._id.toString().slice(-8)}-${paymentDate}${fileExtension}`;
 
     // Set download headers
     res.set({
-      'Content-Type': contentType,
-      'Content-Disposition': `attachment; filename="${filename}"`,
-      'Content-Length': response.data.length,
-      'Cache-Control': 'no-cache, no-store, must-revalidate',
-      'Pragma': 'no-cache',
-      'Expires': '0'
+      "Content-Type": contentType,
+      "Content-Disposition": `attachment; filename="${filename}"`,
+      "Content-Length": response.data.length,
+      "Cache-Control": "no-cache, no-store, must-revalidate",
+      Pragma: "no-cache",
+      Expires: "0",
     });
 
     // Send the image data
@@ -617,36 +676,81 @@ exports.downloadQRCode = asyncHandler(async (req, res) => {
       userId,
       filename,
       contentType,
-      size: response.data.length
+      size: response.data.length,
     });
-
   } catch (error) {
     logger.error("Error downloading QR code:", {
       paymentId,
       userId,
       error: error.message,
-      stack: error.stack
+      stack: error.stack,
     });
 
-    if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND') {
+    if (error.code === "ECONNREFUSED" || error.code === "ENOTFOUND") {
       return res.status(503).json({
         success: false,
-        message: "QR code service temporarily unavailable"
+        message: "QR code service temporarily unavailable",
       });
     }
 
     if (error.response?.status === 404) {
       return res.status(404).json({
         success: false,
-        message: "QR code image not found"
+        message: "QR code image not found",
       });
     }
 
     return res.status(500).json({
       success: false,
-      message: "Failed to download QR code"
+      message: "Failed to download QR code",
     });
   }
+});
+
+/**
+ * @route   GET /api/payments/:paymentIntentId/qr
+ * @desc    Return QR code URL for a payment intent (useful for frontend fallback)
+ * @access  Private (User/Vendor/Admin)
+ */
+exports.getQRCode = asyncHandler(async (req, res) => {
+  const { paymentIntentId } = req.params;
+  const userId = req.user.id;
+  const userRole = req.user.role;
+
+  const Payment = require("./payments.model");
+
+  const payment = await Payment.findOne({ paymentIntentId });
+  if (!payment) {
+    return res
+      .status(404)
+      .json({ success: false, message: "Payment not found" });
+  }
+
+  // Ownership check
+  if (userRole !== "admin" && payment.userId.toString() !== userId.toString()) {
+    return res.status(403).json({ success: false, message: "Access denied" });
+  }
+
+  // Try to read QR URL from gateway response
+  let qrCodeUrl =
+    payment.gatewayResponse?.data?.attributes?.next_action?.code?.image_url ||
+    null;
+
+  // Fallback: generate a QR using the payment intent id
+  if (!qrCodeUrl) {
+    qrCodeUrl = paymentService.generateQRCodeUrl(
+      paymentIntentId,
+      payment.gatewayResponse?.data?.attributes?.client_key,
+    );
+  }
+
+  if (!qrCodeUrl) {
+    return res
+      .status(404)
+      .json({ success: false, message: "QR code URL not available" });
+  }
+
+  res.status(200).json({ success: true, qrCodeUrl });
 });
 
 /**
@@ -663,8 +767,8 @@ exports.getVendorWithdrawals = asyncHandler(async (req, res) => {
     {
       page: parseInt(page),
       limit: parseInt(limit),
-      status
-    }
+      status,
+    },
   );
 
   res.status(200).json({
@@ -675,7 +779,7 @@ exports.getVendorWithdrawals = asyncHandler(async (req, res) => {
       totalPages: result.totalPages,
       totalWithdrawals: result.totalWithdrawals,
       hasNextPage: result.hasNextPage,
-      hasPrevPage: result.hasPrevPage
-    }
+      hasPrevPage: result.hasPrevPage,
+    },
   });
 });
