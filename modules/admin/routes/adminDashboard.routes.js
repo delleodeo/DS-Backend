@@ -92,7 +92,7 @@ router.delete('/announcements/:announcementId', adminController.deleteAnnounceme
 // REFUNDS
 router.get('/refunds', adminController.getAllRefunds);
 router.get('/refunds/:refundId', adminController.getRefundDetails);
-// router.post('/refunds/:refundId/approve', adminController.approveRefund);
+router.post('/refunds/:refundId/approve', adminController.approveRefund);
 router.post('/refunds/:refundId/reject', adminController.rejectRefund);
 router.post('/refunds/:refundId/process', adminController.processRefund);
 

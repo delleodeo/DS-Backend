@@ -8,15 +8,30 @@ const PaymentSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+
+    // ✅ IMPORTANT: add orderId (missing before)
+    // For "pay first" flows (QRPH/GCash/PayMaya), this can be undefined until orders are created.
     orderId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Order",
+      default: undefined, // ✅ do NOT store null
       index: true,
     },
 
     provider: {
       type: String,
-      enum: ["paymongo", "paymaya", "gcash", "wallet", "cod", "bank_transfer", "qrph", "card", "grab_pay", "maya"],
+      enum: [
+        "paymongo",
+        "paymaya",
+        "gcash",
+        "wallet",
+        "cod",
+        "bank_transfer",
+        "qrph",
+        "card",
+        "grab_pay",
+        "maya",
+      ],
       required: true,
       default: "paymongo",
     },
@@ -28,10 +43,10 @@ const PaymentSchema = new mongoose.Schema(
       index: true,
     },
 
-    paymentIntentId: { type: String, sparse: true },
-    paymentMethodId: { type: String, sparse: true },
-    chargeId: { type: String, sparse: true },
-    refundId: { type: String, sparse: true },
+    paymentIntentId: { type: String, default: undefined, index: true },
+    paymentMethodId: { type: String, default: undefined },
+    chargeId: { type: String, default: undefined, index: true },
+    refundId: { type: String, default: undefined, index: true },
 
     amount: {
       type: Number,
@@ -51,6 +66,7 @@ const PaymentSchema = new mongoose.Schema(
       type: Number,
       required: true,
     },
+
     currency: {
       type: String,
       default: "PHP",
@@ -65,6 +81,7 @@ const PaymentSchema = new mongoose.Schema(
         "awaiting_payment",
         "succeeded",
         "failed",
+        "rejected",
         "cancelled",
         "refunded",
         "partially_refunded",
@@ -79,6 +96,7 @@ const PaymentSchema = new mongoose.Schema(
       maxlength: 500,
       trim: true,
     },
+
     metadata: {
       type: Map,
       of: String,
@@ -88,14 +106,18 @@ const PaymentSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+
     idempotencyKey: {
       type: String,
-      sparse: true,
+      default: undefined,
+      index: true,
     },
+
     failureReason: {
       type: String,
       maxlength: 1000,
     },
+
     retryCount: {
       type: Number,
       default: 0,
@@ -151,25 +173,22 @@ const PaymentSchema = new mongoose.Schema(
       agreementDetails: String,
     },
 
-    orderIds: [
-      {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: "Order",
-      },
-    ],
-
     ordersCreated: {
       type: Boolean,
       default: false,
     },
     orderCreationError: String,
 
+    orderIds: [{ type: mongoose.Schema.Types.ObjectId, ref: "Order" }],
+
     paidAt: Date,
+
     walletCredited: {
       type: Boolean,
       default: false,
     },
     walletCreditedAt: Date,
+
     refundedAt: Date,
     expiresAt: Date,
   },
@@ -177,23 +196,70 @@ const PaymentSchema = new mongoose.Schema(
     timestamps: true,
     toJSON: { virtuals: true },
     toObject: { virtuals: true },
-  }
+  },
 );
 
+/**
+ * =========================
+ * Indexes
+ * =========================
+ */
+
 PaymentSchema.index({ userId: 1, type: 1, status: 1 });
-PaymentSchema.index({ orderId: 1, status: 1 });
+PaymentSchema.index({ status: 1 });
 PaymentSchema.index({ createdAt: -1 });
 PaymentSchema.index({ type: 1, status: 1, createdAt: -1 });
-PaymentSchema.index({ paymentIntentId: 1 }, { sparse: true });
 
+/**
+ * ✅ IMPORTANT FIX:
+ * Unique (orderId, type) ONLY when orderId exists (not null)
+ * This prevents E11000 for { orderId: null, type: "checkout" }
+ */
+PaymentSchema.index(
+  { orderId: 1, type: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { orderId: { $exists: true, $ne: null } },
+  },
+);
+
+/**
+ * Optional but recommended: avoid duplicates if PayMongo sends same IDs again
+ */
+PaymentSchema.index(
+  { paymentIntentId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { paymentIntentId: { $type: "string" } },
+  },
+);
+
+PaymentSchema.index(
+  { chargeId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { chargeId: { $type: "string" } },
+  },
+);
+
+PaymentSchema.index({ userId: 1, type: 1, status: 1, createdAt: -1 });
+PaymentSchema.index({ userId: 1, type: 1, createdAt: -1 })
+
+
+/**
+ * Your idempotency index (unique per userId)
+ */
 PaymentSchema.index(
   { userId: 1, idempotencyKey: 1 },
   {
     unique: true,
     partialFilterExpression: { idempotencyKey: { $type: "string" } },
-  }
+  },
 );
 
+/**
+ * Keep netAmount consistent
+ */
 PaymentSchema.pre("save", function (next) {
   if (this.isModified("amount") || this.isModified("fee")) {
     this.netAmount = this.amount - this.fee;
@@ -226,8 +292,9 @@ PaymentSchema.methods.markAsRefunded = function (refundData = {}) {
 };
 
 PaymentSchema.methods.canBeRefunded = function () {
-  // Can be refunded only when succeeded, for checkout type, and not yet finalized
-  return this.status === "succeeded" && this.type === "checkout" && !this.isFinal;
+  return (
+    this.status === "succeeded" && this.type === "checkout" && !this.isFinal
+  );
 };
 
 PaymentSchema.methods.incrementRetry = function () {
@@ -237,10 +304,6 @@ PaymentSchema.methods.incrementRetry = function () {
 
 PaymentSchema.statics.findByIntent = function (paymentIntentId) {
   return this.findOne({ paymentIntentId });
-};
-
-PaymentSchema.statics.findByOrder = function (orderId) {
-  return this.find({ orderId }).sort({ createdAt: -1 });
 };
 
 PaymentSchema.statics.findUserPayments = function (userId, type = null) {

@@ -247,11 +247,13 @@ exports.cancelWithdrawal = asyncHandler(async (req, res) => {
   const { paymentId } = req.params;
   const vendorId = req.user.id;
   const { reason } = req.body;
+  const idemKey = req.get('Idempotency-Key') || req.header('Idempotency-Key')
 
   const payment = await paymentService.cancelWithdrawal(
     vendorId,
     paymentId,
     reason,
+    idemKey
   );
 
   res.status(200).json({
@@ -753,16 +755,11 @@ exports.getQRCode = asyncHandler(async (req, res) => {
   res.status(200).json({ success: true, qrCodeUrl });
 });
 
-/**
- * @route   GET /api/payments/vendor/withdrawals
- * @desc    Get withdrawal history for vendor
- * @access  Private (Vendor only)
- */
 exports.getVendorWithdrawals = asyncHandler(async (req, res) => {
   const vendorId = req.user.id;
   const { page = 1, limit = 10, status } = req.query;
 
-  const result = await require("./payments.service").getVendorWithdrawals(
+  const result = await paymentService.getVendorWithdrawals(
     vendorId,
     {
       page: parseInt(page),

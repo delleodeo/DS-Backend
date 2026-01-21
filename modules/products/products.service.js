@@ -12,7 +12,6 @@ try {
   redisClient = null;
 }
 const Product = require("./products.model.js");
-const Admin = require("../admin/admin.model.js");
 const Vendor = require("../vendors/vendors.model.js");
 // validateOptionPayload re-exported from productUtils to allow easy mocking in tests
 const { validateOptionPayload } = require("./product-utils/productUtils.js");

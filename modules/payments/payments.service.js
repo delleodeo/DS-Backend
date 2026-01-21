@@ -2,12 +2,18 @@ const Payment = require("./payments.model");
 const Order = require("../orders/orders.model");
 const Vendor = require("../vendors/vendors.model");
 const Admin = require("../admin/admin.model");
+const VendorWallet = require("../wallet/vendorWallet.model");
 const walletService = require("../wallet/wallet.service");
 const sanitizeMongoInput = require("../../utils/sanitizeMongoInput");
 const paymongoClient = require("../../utils/paymongoClient");
-const logger = require("../../utils/logger");
-const { safeDel, isRedisAvailable } = require("../../config/redis");
 const mongoose = require("mongoose");
+const logger = require("../../utils/logger");
+const {
+  safeDel,
+  isRedisAvailable,
+  getRedisClient,
+  safeDelPattern,
+} = require("../../config/redis");
 const {
   clearCartService,
   removeItemsFromCartService,
@@ -21,6 +27,10 @@ const {
 } = require("../../utils/errorHandler");
 const crypto = require("crypto");
 
+const redisClient = getRedisClient();
+
+const cacheKeyVendorWithdrawal = (sanitizeVendorId, page, limit, status) =>
+  `vendorWithdrawals:${sanitizeVendorId}:page${page}:limit${limit}:status${status || "all"}`;
 const getUserOrdersKey = (userId) => `orders:user:${userId}`;
 const getVendorOrdersKey = (vendorId) => `orders:vendor:${vendorId}`;
 const getProductOrdersKey = (productId) => `orders:product:${productId}`;
@@ -30,6 +40,10 @@ function generateTrackingNumber() {
   const timestamp = Date.now();
   const randomHex = crypto.randomBytes(4).toString("hex").toUpperCase();
   return `DSTRK${timestamp}${randomHex}`;
+}
+
+function isValidObjectId(id) {
+  return mongoose.Types.ObjectId.isValid(id);
 }
 
 async function updateVendorRevenue(vendorId) {
@@ -155,7 +169,7 @@ class PaymentService {
         type: "checkout",
         provider: "paymongo",
         amount: sanitizedAmount,
-        fee: Math.round(sanitizedAmount * 0.035),
+        fee: 0,
         netAmount: sanitizedAmount,
         currency: "PHP",
         description: sanitizedDescription,
@@ -654,8 +668,20 @@ class PaymentService {
   }
 
   async createCashIn(userId, amount, paymentMethod = "qrph", idempotencyKey) {
+    const vendorWithdrawalsCacheKey = cacheKeyVendorWithdrawal(
+      "*",
+      "*",
+      "*",
+      "*",
+    );
+
+    const sanitizedAmount = sanitizeMongoInput(amount);
+    const sanitizedIdempotencyKey = sanitizeMongoInput(idempotencyKey);
+
     try {
-      const sanitizedAmount = sanitizeMongoInput(amount);
+      if (!isValidObjectId(userId)) {
+        throw new ValidationError("Invalid user ID");
+      }
 
       if (
         sanitizedAmount === undefined ||
@@ -678,7 +704,7 @@ class PaymentService {
       }
 
       const key = String(
-        idempotencyKey ||
+        sanitizedIdempotencyKey ||
           (crypto.randomUUID
             ? crypto.randomUUID()
             : crypto.randomBytes(16).toString("hex")),
@@ -804,6 +830,7 @@ class PaymentService {
       if (isRedisAvailable()) {
         try {
           await safeDel(`vendor:${userId}`);
+          await safeDelPattern(vendorWithdrawalsCacheKey);
         } catch (e) {
           logger.warn(
             "Failed to clear wallet cache after cash-in creation:",
@@ -836,8 +863,6 @@ class PaymentService {
     try {
       session = await Payment.startSession();
       session.startTransaction();
-
-      const VendorWallet = require("../wallet/vendorWallet.model");
       const WalletTransaction = require("../wallet/walletTransaction.model");
 
       // Ensure wallet exists
@@ -935,6 +960,7 @@ class PaymentService {
       // Invalidate cache keys if redis available
       if (isRedisAvailable()) {
         try {
+          await safeDel(`vendor:${payment.userId}`);
           await safeDel(`wallet:${payment.userId}`);
           await safeDel(`wallet:balance:${payment.userId}`);
         } catch (e) {
@@ -966,13 +992,26 @@ class PaymentService {
     payoutMethod = "gcash",
     idempotencyKey,
   ) {
+    const vendorWithdrawalsCacheKey = cacheKeyVendorWithdrawal(
+      "*",
+      "*",
+      "*",
+      "*",
+    );
+
     const session = await Payment.startSession();
+    const idempotencyKeySanitized = sanitizeMongoInput(idempotencyKey);
     try {
       const sanitizedAmount = sanitizeMongoInput(amount);
+
+      if (!isValidObjectId(vendorId)) {
+        throw new ValidationError("Invalid vendor ID");
+      }
 
       if (!sanitizedAmount || sanitizedAmount < 10000) {
         throw new ValidationError("Minimum withdrawal amount is 100 PHP");
       }
+
       if (
         !bankAccount?.accountNumber ||
         !bankAccount?.accountName ||
@@ -984,12 +1023,14 @@ class PaymentService {
       const method = String(
         sanitizeMongoInput(payoutMethod) || "",
       ).toLowerCase();
+
       if (!["gcash", "paymaya"].includes(method)) {
         throw new ValidationError("Withdrawal method must be GCash or PayMaya");
       }
 
       const key =
-        (typeof idempotencyKey === "string" && idempotencyKey.trim()) ||
+        (typeof idempotencyKeySanitized === "string" &&
+          idempotencyKeySanitized.trim()) ||
         `withdraw:${vendorId}:${crypto
           .createHash("sha256")
           .update(
@@ -1004,7 +1045,7 @@ class PaymentService {
           .digest("hex")}`;
 
       const existing = await Payment.findOne(
-        { userId: vendorId, idempotencyKey: key, type: "withdraw" },
+        { userId: vendorId, idempotencyKeySanitized: key, type: "withdraw" },
         null,
         { session },
       );
@@ -1012,8 +1053,7 @@ class PaymentService {
 
       session.startTransaction();
 
-      const vendorWallet = require("../wallet/vendorWallet.model");
-      const vendor = await vendorWallet.getOrCreateForUser(vendorId);
+      const vendor = await VendorWallet.getOrCreateForUser(vendorId);
 
       if (!vendor) {
         throw new ValidationError("Vendor not found");
@@ -1022,12 +1062,13 @@ class PaymentService {
       const vendorBalance = vendor.balance || 0;
       const amountPhp = Number(sanitizedAmount) / 100;
 
-      // Allow creation of withdrawal requests even if balance is insufficient. Final approval step will perform balance checks and debiting.
-      const fee = Math.round(sanitizedAmount * 0.015);
+      const fee = Math.round(sanitizedAmount * 0.01);
       const netAmount = Math.max(0, sanitizedAmount - fee);
 
-      // Do not change vendor wallet balance yet. Balance will be debited when withdrawal is approved by admin.
-      // We still record vendorBalance for logging.
+      if (vendorBalance < amountPhp) {
+        throw new ValidationError("Insufficient wallet balance for withdrawal");
+      }
+
       const newBalance = vendorBalance - amountPhp; // potential balance after approval (used for logs)
 
       const payment = await Payment.create(
@@ -1060,6 +1101,29 @@ class PaymentService {
 
       const saved = payment[0];
 
+      const now = new Date();
+
+      const wallet = await VendorWallet.findOneAndUpdate(
+        { user: vendorId, balance: { $gte: amountPhp } },
+        {
+          $inc: { balance: -amountPhp },
+          $set: { updatedAt: now },
+          $push: {
+            transactions: {
+              type: "debit",
+              amount: amountPhp,
+              description: "Vendor Withdrawal",
+              date: now,
+              reference: `WITHDRAWAL-${payment._id}`,
+            },
+          },
+        },
+        { session, new: true },
+      );
+
+      if (!wallet) {
+        throw new Error("Insufficient balance or wallet not found");
+      }
       logger.info("Withdrawal created (idempotent):", {
         paymentId: saved._id,
         vendorId,
@@ -1070,8 +1134,8 @@ class PaymentService {
       });
 
       if (isRedisAvailable()) {
-        const { safeDel } = require("../../config/redis");
         await safeDel(`vendor:${vendorId}`);
+        await safeDelPattern(vendorWithdrawalsCacheKey);
       }
 
       return saved;
@@ -1098,9 +1162,22 @@ class PaymentService {
     }
   }
 
-  async cancelWithdrawal(vendorId, paymentId, reason = "") {
+  async cancelWithdrawal(vendorId, paymentId, reason = "", idempotencyKey) {
+    const vendorWithdrawalsCacheKey = cacheKeyVendorWithdrawal(
+      "*",
+      "*",
+      "*",
+      "*",
+    );
     try {
+      if (!isValidObjectId(vendorId))
+        throw new ValidationError("Invalid vendor ID");
+
+      if (!isValidObjectId(paymentId))
+        throw new ValidationError("Invalid payment ID");
+
       const payment = await Payment.findById(paymentId);
+
       if (!payment) {
         throw new NotFoundError("Payment not found");
       }
@@ -1113,7 +1190,9 @@ class PaymentService {
         throw new ValidationError("Access denied");
       }
 
-      if (payment.status !== "pending") {
+      console.log("pasdpksadjsadjasdasdasdsadasd", payment);
+
+      if (payment.status !== "pending" && payment.status !== "processing") {
         throw new ValidationError("Only pending withdrawals can be cancelled");
       }
 
@@ -1132,17 +1211,37 @@ class PaymentService {
       payment.isFinal = true;
       payment.cancelledAt = new Date();
       payment.failureReason = reason || "Cancelled by vendor";
+      payment.idempotencyKey = idempotencyKey || payment.idempotencyKey;
       await payment.save();
 
-      logger.info("Withdrawal cancelled with refund:", {
-        paymentId: payment._id,
-        vendorId,
-        refundAmount: amountPhp,
+      if (payment.status !== "cancelled")
+        throw new Error("Failed to cancel withdrawal");
+
+      await VendorWallet.findOneAndUpdate(
+        { user: vendorId },
+        { $inc: { balance: amountPhp } },
+        {
+          $push: {
+            transactions: {
+              type: "credit",
+              amount: amountPhp,
+              description: "Withdrawal Cancellation Refund",
+              date: new Date(),
+              reference: `WITHDRAWAL-CANCELLED-${payment._id}`,
+            },
+          },
+        },
+      ).catch((err) => {
+        logger.error(
+          "Failed to refund wallet after withdrawal cancellation:",
+          err,
+        );
       });
 
       if (isRedisAvailable()) {
         const { safeDel } = require("../../config/redis");
         await safeDel(`vendor:${vendorId}`);
+        await safeDelPattern(vendorWithdrawalsCacheKey);
       }
 
       return payment;
@@ -1155,6 +1254,13 @@ class PaymentService {
   async approveWithdrawal(adminId, paymentId, options = {}) {
     const { adminProofUrl = null, payoutRef = null } = options;
 
+    const vendorWithdrawalsCacheKey = cacheKeyVendorWithdrawal(
+      "*",
+      "*",
+      "*",
+      "*",
+    );
+
     try {
       const payment = await Payment.findById(paymentId);
       if (!payment) {
@@ -1166,16 +1272,24 @@ class PaymentService {
       if (payment.status !== "pending") {
         throw new ValidationError("Only pending withdrawals can be approved");
       }
+
       payment.status = "succeeded";
       payment.isFinal = true;
       payment.approvedBy = adminId;
       payment.approvedAt = new Date();
       payment.adminProofUrl = adminProofUrl;
       payment.payoutRef = payoutRef;
+
       await payment.save();
 
+      if (payment.status !== "succeeded")
+        throw new Error("Failed to approve withdrawal");
+
+      // const withdrawAmountPhp = Number(payment.amount) / 100;
+      // const vendorId = payment.userId;
+
       if (isRedisAvailable()) {
-        const { safeDel } = require("../../config/redis");
+        await safeDelPattern(vendorWithdrawalsCacheKey);
         await safeDel(`vendor:${payment.userId}`);
       }
       return payment;
@@ -1198,23 +1312,45 @@ class PaymentService {
         throw new ValidationError("Only pending withdrawals can be rejected");
       }
 
-      const Vendor = require("../vendors/vendors.model");
       const amountPhp = Number(payment.amount) / 100;
 
-      await Vendor.findOneAndUpdate(
-        { userId: payment.userId },
-        {
-          $inc: { "accountBalance.cash": amountPhp },
-          $set: { updatedAt: new Date() },
-        },
-      );
-
-      payment.status = "failed";
+      payment.status = "rejected";
       payment.isFinal = true;
       payment.rejectedBy = adminId;
       payment.rejectedAt = new Date();
       payment.rejectionReason = reason || "Rejected by admin";
       await payment.save();
+
+      if (payment.status !== "rejected")
+        throw new Error("Failed to reject withdrawal");
+
+      const vendorId = payment.userId;
+
+      await VendorWallet.findOneAndUpdate(
+        { user: vendorId },
+        { $inc: { balance: amountPhp } },
+        {
+          $push: {
+            transactions: {
+              type: "credit",
+              amount: amountPhp,
+              description: "Withdrawal Rejection Refund",
+              date: new Date(),
+              reference: `WITHDRAWAL-REJECTED-${payment._id}`,
+            },
+          },
+        },
+      ).catch((err) => {
+        logger.error(
+          "Failed to refund wallet after withdrawal rejection:",
+          err,
+        );
+      });
+
+      if (isRedisAvailable()) {
+        await safeDelPattern(vendorWithdrawalsCacheKey);
+        await safeDel(`vendor:${payment.userId}`);
+      }
 
       logger.info("Withdrawal rejected with refund:", {
         paymentId: payment._id,
@@ -1830,8 +1966,21 @@ class PaymentService {
     vendorId,
     { page = 1, limit = 10, status = null },
   ) {
+    const sanitizeVendorId = sanitizeMongoInput(vendorId);
+    const vendorWithdrawalsCacheKey = cacheKeyVendorWithdrawal(
+      sanitizeVendorId,
+      page,
+      limit,
+      status,
+    );
     try {
-      const query = { userId: vendorId, type: "withdraw" };
+      if (isRedisAvailable()) {
+        const cachedData = await redisClient.get(vendorWithdrawalsCacheKey);
+        if (cachedData) {
+          return JSON.parse(cachedData);
+        }
+      }
+      const query = { userId: sanitizeVendorId, type: "withdraw" };
       if (status) query.status = status;
 
       const skip = (page - 1) * limit;
@@ -1848,10 +1997,12 @@ class PaymentService {
 
       const totalPages = Math.ceil(totalWithdrawals / limit);
 
-      return {
+      const withdrawalsData = {
         withdrawals: withdrawals.map((withdrawal) => ({
           _id: withdrawal._id,
           amount: withdrawal.amount,
+          fee: withdrawal.fee,
+          netAmount: withdrawal.netAmount,
           status: withdrawal.status,
           provider: withdrawal.provider,
           bankAccount: withdrawal.bankAccount,
@@ -1868,6 +2019,15 @@ class PaymentService {
         hasNextPage: page < totalPages,
         hasPrevPage: page > 1,
       };
+
+      if (isRedisAvailable())
+        await redisClient
+          .set(vendorWithdrawalsCacheKey, JSON.stringify(withdrawalsData), {
+            EX: 300,
+          })
+          .catch(() => {});
+
+      return withdrawalsData;
     } catch (error) {
       logger.error("Error fetching vendor withdrawals:", error);
       throw error;
