@@ -1,5 +1,11 @@
 const Order = require("./orders.model");
-const { getRedisClient, isRedisAvailable } = require("../../config/redis");
+const {
+  getRedisClient,
+  isRedisAvailable,
+  safeDelPattern,
+  safeDel,
+} = require("../../config/redis");
+
 const redisClient = getRedisClient();
 const Admin = require("../admin/admin.model.js");
 const { RefundRequest } = require("../admin/models");
@@ -7,6 +13,7 @@ const { emitAgreementMessage } = require("../../config/socket");
 const Product = require("../products/products.model");
 const Vendor = require("../vendors/vendors.model");
 const sanitizeMongoInput = require("../../utils/sanitizeMongoInput");
+const crypto = require("crypto");
 const {
   ValidationError,
   NotFoundError,
@@ -138,7 +145,6 @@ const updateVendorRevenue = async (vendorId) => {
     await vendor.save();
 
     if (isRedisAvailable()) {
-      const { safeDel } = require("../../config/redis");
       await safeDel(`vendor:${vendorId}`);
       await safeDel(`vendor:${vendor._id}`);
     }
@@ -156,7 +162,6 @@ const updateVendorRevenue = async (vendorId) => {
 
 // CREATE ORDER
 exports.createOrderService = async (orderData) => {
-  const userWallet = require("../wallet/userWallet.model");
   try {
     orderData = sanitizeMongoInput(orderData);
     // Ensure customerId exists and is valid
@@ -164,32 +169,36 @@ exports.createOrderService = async (orderData) => {
     if (!customerId) throw new ValidationError("Missing customerId");
     validateId(String(customerId), "customerId");
 
-    const userWalletData = await userWallet.getOrCreateForUser(customerId);
+    if (orderData.paymentMethod === "wallet") {
+      const userWallet = require("../wallet/userWallet.model");
+      const userWalletData = await userWallet.getOrCreateForUser(customerId);
 
-    if (!userWalletData) throw new ValidationError("User wallet not found.");
+      if (!userWalletData) throw new ValidationError("User wallet not found.");
 
-    if (userWalletData.isLocked)
-      throw new ConflictError("User wallet is locked. Cannot place order.");
+      if (userWalletData.balance < orderData.subTotal)
+        throw new ConflictError("Insufficient wallet balance to place order.");
 
-    if (userWalletData.balance < orderData.subTotal)
-      throw new ConflictError("Insufficient wallet balance to place order.");
+      if (userWalletData.isLocked)
+        throw new ConflictError("User wallet is locked. Cannot place order.");
 
-    userWalletData.balance -= orderData.subTotal;
-    await userWalletData.save();
+      userWalletData.balance -= orderData.subTotal;
+      await userWalletData.save();
+    }
 
     const order = new Order(orderData);
     const savedOrder = await order.save();
 
     await Admin.updateOne({}, { $inc: { totalOrders: 1, newOrdersCount: 1 } });
 
-    // Invalidate Redis cache
-
     if (isRedisAvailable()) {
       console.log("	Invalidating caches for new order...", orderData);
       try {
-        const { safeDel, safeDelPattern } = require("../../config/redis");
         await safeDel(`user:profile:${customerId}`);
-        await safeDelPattern(`vendor_orders:${orderData.vendorId}:*`);
+        const deletedCount = await safeDelPattern(`vendor_orders:v3:${orderData.vendorId}:*`);
+
+        console.log("		Cleared vendor orders cacheeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", deletedCount, orderData.vendorId);
+        console.log("		Cleared vendor orders cacheeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", orderData.vendorId);
+        await safeDel(`vendor_status_counts:v1:${orderData.vendorId}`);
       } catch (redisErr) {
         console.warn("Redis cache invalidation failed:", redisErr.message);
       }
@@ -248,33 +257,26 @@ exports.getOrderStatusCountsService = async (userId) => {
     if (cache) return JSON.parse(cache);
   }
 
-  // Get counts for each status
-  const [
-    pending,
-    paid,
-    shipped,
-    delivered,
-    cancelled,
-    refundRequested,
-    refundApproved,
-    refunded,
-  ] = await Promise.all([
-    Order.countDocuments({ customerId: userId, status: "pending" }),
-    Order.countDocuments({ customerId: userId, status: "paid" }),
-    Order.countDocuments({ customerId: userId, status: "shipped" }),
-    Order.countDocuments({ customerId: userId, status: "delivered" }),
-    Order.countDocuments({ customerId: userId, status: "cancelled" }),
-    Order.countDocuments({ customerId: userId, status: "refund_requested" }),
-    Order.countDocuments({ customerId: userId, status: "refund_approved" }),
-    Order.countDocuments({ customerId: userId, status: "refunded" }),
+  const rows = await Order.aggregate([
+    { $match: { customerId: userId } },
+    { $group: { _id: "$status", count: { $sum: 1 } } },
   ]);
 
+  const map = Object.create(null);
+  for (const r of rows) map[r._id] = r.count;
+
+  const refundRequested = map["refund_requested"] || 0;
+  const refundApproved = map["refund_approved"] || 0;
+  const refunded = map["refunded"] || 0;
+  const delivered =
+    (map["delivered"] || 0) + refundRequested + refundApproved + refunded;
+
   const statusCounts = {
-    pending,
-    paid,
-    shipped,
-    delivered: delivered + refundRequested + refundApproved + refunded, // Include all refund statuses in delivered
-    cancelled,
+    pending: map["pending"] || 0,
+    paid: map["paid"] || 0,
+    shipped: map["shipped"] || 0,
+    delivered,
+    cancelled: map["cancelled"] || 0,
   };
 
   if (isRedisAvailable()) {
@@ -286,9 +288,15 @@ exports.getOrderStatusCountsService = async (userId) => {
   return statusCounts;
 };
 
-// GET ORDERS BY VENDOR (WITH PAGINATION AND FILTERING)
+const hash16 = (v) =>
+  crypto
+    .createHash("sha1")
+    .update(String(v ?? ""))
+    .digest("hex")
+    .slice(0, 16);
+
 exports.getOrdersByVendorService = async (vendorId, options = {}) => {
-  const {
+  let {
     page = 1,
     limit = 12,
     search = "",
@@ -303,104 +311,139 @@ exports.getOrdersByVendorService = async (vendorId, options = {}) => {
   vendorId = sanitizeMongoInput(vendorId);
   validateId(String(vendorId), "vendorId");
 
-  // Create cache key based on all parameters
-  const cacheKey = `vendor_orders:${vendorId}:p${page}:l${limit}:s${search}:st${status}:pm${paymentMethod}:ps${paymentStatus}:df${dateFrom?.toISOString()}:dt${dateTo?.toISOString()}:sd${sortDir}`;
+  page = Math.max(1, parseInt(page, 10) || 1);
+  limit = Math.min(100, Math.max(1, parseInt(limit, 10) || 12));
+  sortDir = sortDir === 1 || sortDir === "1" ? 1 : -1;
 
-  if (isRedisAvailable()) {
+  search = (search || "").trim();
+  if (search.length > 80) search = search.slice(0, 80);
+
+  const vendorObjectId = new mongoose.Types.ObjectId(String(vendorId));
+
+  const dfKey =
+    dateFrom instanceof Date && !Number.isNaN(dateFrom.getTime())
+      ? dateFrom.toISOString().slice(0, 10)
+      : "";
+  const dtKey =
+    dateTo instanceof Date && !Number.isNaN(dateTo.getTime())
+      ? dateTo.toISOString().slice(0, 10)
+      : "";
+
+  const cacheKey = [
+    "vendor_orders:v3",
+    vendorId,
+    `p${page}`,
+    `l${limit}`,
+    `s${hash16(search)}`,
+    `st${status || ""}`,
+    `pm${paymentMethod || ""}`,
+    `ps${paymentStatus || ""}`,
+    `df${dfKey}`,
+    `dt${dtKey}`,
+    `sd${sortDir}`,
+  ].join(":");
+
+  const redisOk = isRedisAvailable();
+
+  if (redisOk) {
     const cache = await redisClient.get(cacheKey).catch(() => null);
     if (cache) return JSON.parse(cache);
   }
 
-  // Build MongoDB query
-  const query = { vendorId };
+  const match = { vendorId: vendorObjectId };
 
-  // Add status filter
-  if (status) {
-    query.status = status;
-  }
+  if (status) match.status = status;
+  if (paymentMethod) match.paymentMethod = paymentMethod;
+  if (paymentStatus) match.paymentStatus = paymentStatus;
 
-  // Add payment method filter
-  if (paymentMethod) {
-    query.paymentMethod = paymentMethod;
-  }
-
-  // Add payment status filter
-  if (paymentStatus) {
-    query.paymentStatus = paymentStatus;
-  }
-
-  // Add date range filter
   if (dateFrom || dateTo) {
-    query.createdAt = {};
-    if (dateFrom) query.createdAt.$gte = dateFrom;
-    if (dateTo) {
-      // Set to end of day
+    const createdAt = {};
+    if (dateFrom instanceof Date && !Number.isNaN(dateFrom.getTime())) {
+      createdAt.$gte = dateFrom;
+    }
+    if (dateTo instanceof Date && !Number.isNaN(dateTo.getTime())) {
       const endOfDay = new Date(dateTo);
       endOfDay.setHours(23, 59, 59, 999);
-      query.createdAt.$lte = endOfDay;
+      createdAt.$lte = endOfDay;
     }
+    if (Object.keys(createdAt).length) match.createdAt = createdAt;
   }
 
-  // Build search query for multiple fields
-  let searchQuery = {};
   if (search) {
+    const or = [];
+
+    if (mongoose.isValidObjectId(search)) {
+      or.push({ _id: new mongoose.Types.ObjectId(search) });
+    }
+
     const searchRegex = new RegExp(
       search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
       "i",
     );
-    searchQuery = {
-      $or: [
-        { _id: searchRegex }, // Order ID
-        { orderId: searchRegex }, // Alternative order ID
-        { name: searchRegex }, // Customer name
-        { trackingNumber: searchRegex }, // Tracking number
-      ],
-    };
+
+    or.push(
+      { orderId: searchRegex },
+      { name: searchRegex },
+      { trackingNumber: searchRegex },
+    );
+
+    match.$or = or;
   }
 
-  // Combine queries
-  const finalQuery = search ? { ...query, ...searchQuery } : query;
-
-  // Get total count for pagination
-  const total = await Order.countDocuments(finalQuery);
-
-  // Calculate pagination values
-  const totalPages = Math.ceil(total / limit);
   const skip = (page - 1) * limit;
 
-  // Fetch paginated results
-  const orders = await Order.find(finalQuery)
-    .sort({ createdAt: sortDir })
-    .skip(skip)
-    .limit(limit)
-    .lean();
+  const statusCountsKey = `vendor_status_counts:v1:${vendorId}`;
+  let statusCountMap = null;
 
-  // Get status counts for the current vendor (for UI tabs)
-  let statusCounts = [];
-  try {
-    statusCounts = await Order.aggregate([
-      { $match: { vendorId: new mongoose.Types.ObjectId(vendorId) } },
-      { $group: { _id: "$status", count: { $sum: 1 } } },
-    ]);
-    console.log(`Status counts for vendor ${vendorId}:`, statusCounts);
-  } catch (aggError) {
-    console.error("Error calculating status counts:", aggError);
-    statusCounts = [];
+  if (redisOk) {
+    const cachedCounts = await redisClient
+      .get(statusCountsKey)
+      .catch(() => null);
+    if (cachedCounts) statusCountMap = JSON.parse(cachedCounts);
   }
 
-  const statusCountMap = {
-    all: statusCounts.reduce((sum, item) => sum + item.count, 0),
-    pending: 0,
-    paid: 0,
-    shipped: 0,
-    delivered: 0,
-    cancelled: 0,
-  };
-  statusCounts.forEach((item) => {
-    statusCountMap[item._id] = item.count;
-  });
+  const [facet] = await Order.aggregate([
+    { $match: match },
+    { $sort: { createdAt: sortDir, _id: sortDir } },
+    {
+      $facet: {
+        data: [{ $skip: skip }, { $limit: limit }],
+        meta: [{ $count: "total" }],
+      },
+    },
+  ]);
 
-  // Prepare response
+  const orders = facet?.data || [];
+  const total = facet?.meta?.[0]?.total || 0;
+  const totalPages = Math.ceil(total / limit) || 1;
+
+  if (!statusCountMap) {
+    const counts = await Order.aggregate([
+      { $match: { vendorId: vendorObjectId } },
+      { $group: { _id: "$status", count: { $sum: 1 } } },
+    ]);
+
+    statusCountMap = {
+      all: 0,
+      pending: 0,
+      paid: 0,
+      shipped: 0,
+      delivered: 0,
+      cancelled: 0,
+    };
+
+    for (const item of counts) {
+      statusCountMap.all += item.count;
+      statusCountMap[item._id] = item.count;
+    }
+
+    if (redisOk) {
+      await redisClient
+        .set(statusCountsKey, JSON.stringify(statusCountMap), { EX: 45 })
+        .catch(() => {});
+    }
+  }
+
   const result = {
     orders,
     pagination: {
@@ -414,12 +457,16 @@ exports.getOrdersByVendorService = async (vendorId, options = {}) => {
     statusCounts: statusCountMap,
   };
 
-  // Cache the result (shorter TTL for filtered results)
-  if (isRedisAvailable()) {
-    const ttl =
-      search || status || paymentMethod || paymentStatus || dateFrom || dateTo
-        ? 60
-        : 150; // 1 min for filtered, 2.5 min for unfiltered
+  if (redisOk) {
+    const filtered = !!(
+      search ||
+      status ||
+      paymentMethod ||
+      paymentStatus ||
+      dateFrom ||
+      dateTo
+    );
+    const ttl = filtered ? 60 : 150;
     await redisClient
       .set(cacheKey, JSON.stringify(result), { EX: ttl })
       .catch(() => {});
@@ -559,18 +606,8 @@ exports.cancelOrderService = async (orderId, customerId = null) => {
   }
 
   if (isRedisAvailable()) {
-    const { safeDel } = require("../../config/redis");
-    await Promise.all([
-      safeDel(getOrderKey(orderId)),
-      safeDel(getUserOrdersKey(updated.userId || updated.customerId)),
-      safeDel(getVendorOrdersKey(updated.vendorId)),
-      ...updated.items.map((item) =>
-        safeDel(getProductOrdersKey(item.orderProductId || item.productId)),
-      ),
-    ]);
-
-    // Invalidate all vendor order cache keys to update status counts
-    await deleteKeysByPattern(`vendor_orders:${updated.vendorId}:*`);
+    await safeDelPattern(`vendor_orders:v3:${orderData.vendorId}:*`);
+    await safeDel(`vendor_status_counts:v1:${orderData.vendorId}`);
   }
 
   return updated;
@@ -599,7 +636,6 @@ const deleteKeysByPattern = async (pattern) => {
       cursor = reply.cursor;
       const keys = reply.keys;
       if (keys.length > 0) {
-        const { safeDel } = require("../../config/redis");
         await safeDel(keys);
       }
     } while (cursor !== 0);
@@ -676,7 +712,6 @@ const updateProductStock = async (productId, optionId, quantity) => {
     ];
 
     if (keysToDelete.length > 0) {
-      const { safeDel } = require("../../config/redis");
       await safeDel(keysToDelete);
     }
 
@@ -822,7 +857,8 @@ exports.updateOrderStatusService = async (
 
   try {
     if (isRedisAvailable()) {
-      const { safeDel } = require("../../config/redis");
+      await safeDelPattern(`vendor_orders:v3:${updated.vendorId}:*`);
+      await safeDel(`vendor_status_counts:v1:${updated.vendorId}`);
       await Promise.all([
         safeDel(getOrderKey(orderId)),
         safeDel(getUserOrdersKey(updated.customerId)),
@@ -833,7 +869,6 @@ exports.updateOrderStatusService = async (
       ]);
 
       // Invalidate all vendor order cache keys to update status counts
-      await deleteKeysByPattern(`vendor_orders:${updated.vendorId}:*`);
     }
   } catch (redisErr) {
     console.warn("Redis cache invalidation failed:", redisErr.message);
@@ -902,7 +937,6 @@ exports.addAgreementMessageService = async ({
   // Invalidate Redis cache for this order and related data
   try {
     if (isRedisAvailable()) {
-      const { safeDel } = require("../../config/redis");
       await Promise.all([
         safeDel(getOrderKey(orderId)),
         safeDel(getUserOrdersKey(order.customerId.toString())),

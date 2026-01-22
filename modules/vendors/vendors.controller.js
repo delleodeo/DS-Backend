@@ -147,7 +147,23 @@ exports.batchResetMonthlyRevenue = async (req, res) => {
 exports.getVendorFinancials = async (req, res) => {
 	try {
 		const vendorId = req.user.id;
-		const result = await vendorService.getVendorFinancials(vendorId);
+		const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+		const limit = Math.max(1, Math.min(12, parseInt(req.query.limit, 10) || 12));
+		const result = await vendorService.getVendorFinancials(vendorId, { page, limit });
+
+		// Safety: ensure recentOrders is a paginated object { data, page, limit, total }
+		if (Array.isArray(result?.recentOrders)) {
+			const total = result.recentOrders.length;
+			const start = (page - 1) * limit;
+			const paged = result.recentOrders.slice(start, start + limit);
+			result.recentOrders = {
+				data: paged,
+				page,
+				limit,
+				total,
+			};
+		}
+
 		res.status(200).json(result);
 	} catch (err) {
 		console.error("Get Vendor Financials Error:", err);

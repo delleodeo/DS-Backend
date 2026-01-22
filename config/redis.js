@@ -85,34 +85,41 @@ async function safeDel(keys) {
   }
 }
 
-async function safeDelPattern(pattern, { batchSize = 500, useUnlink = true } = {}) {
-  if (!isRedisAvailable()) return 0;
-  if (!pattern || typeof pattern !== "string") return 0;
 
-  let cursor = "0";
+async function safeDelPattern(pattern, { batchSize = 500, useUnlink = true } = {}) {
+  if (!pattern || typeof pattern !== "string") return 0;
+  if (!client?.isOpen) return 0;
+
+  const fn =
+    useUnlink && typeof client.unlink === "function"
+      ? client.unlink.bind(client)
+      : client.del.bind(client);
+
   let deleted = 0;
+  let batch = [];
 
   try {
-    do {
-      const res = await client.scan(cursor, { MATCH: pattern, COUNT: batchSize });
-      cursor = res.cursor;
-      const keys = res.keys || [];
+    for await (const key of client.scanIterator({ MATCH: pattern, COUNT: batchSize })) {
+      batch.push(key);
 
-      if (keys.length) {
-        if (useUnlink && typeof client.unlink === "function") {
-          deleted += await client.unlink(keys);
-        } else {
-          deleted += await client.del(keys);
-        }
+      if (batch.length >= batchSize) {
+        deleted += await fn(...batch).catch(() => 0);
+        batch = [];
       }
-    } while (cursor !== "0");
+    }
+
+    if (batch.length) {
+      deleted += await fn(...batch).catch(() => 0);
+    }
 
     return deleted;
   } catch (err) {
-    console.warn(`safeDelPattern failed for "${pattern}":`, err.message);
+    console.warn(`safeDelPattern failed for "${pattern}":`, err?.message || err);
     return deleted;
   }
 }
+
+
 
 async function zAddSafe(key, score, value, ttlSec) {
   if (!isRedisAvailable()) return false;

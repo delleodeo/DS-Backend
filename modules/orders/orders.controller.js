@@ -72,34 +72,71 @@ exports.getOrderStatusCounts = asyncHandler(async (req, res) => {
 });
 
 exports.getOrdersByVendor = asyncHandler(async (req, res) => {
-	const { id } = req.user;
-	validateId(String(id), 'vendorId');
+  const { id } = req.user;
+  validateId(String(id), "vendorId");
 
-	// Extract pagination and filter parameters with defaults and validation
-	const page = Math.max(1, parseInt(req.query.page) || 1);
-	const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 12)); // Max 100, min 1, default 12
-	const search = req.query.search ? sanitizeMongoInput(String(req.query.search).trim()) : '';
-	const status = req.query.status && req.query.status !== 'all' ? sanitizeMongoInput(req.query.status) : null;
-	const paymentMethod = req.query.paymentMethod && req.query.paymentMethod !== 'all' ? sanitizeMongoInput(req.query.paymentMethod) : null;
-	const paymentStatus = req.query.paymentStatus && req.query.paymentStatus !== 'all' ? sanitizeMongoInput(req.query.paymentStatus) : null;
-	const dateFrom = req.query.dateFrom ? new Date(req.query.dateFrom) : null;
-	const dateTo = req.query.dateTo ? new Date(req.query.dateTo) : null;
-	const sortDir = req.query.sortDir === 'asc' ? 1 : -1; // Default desc (-1)
+  const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 12));
+  const sortDir = req.query.sortDir === "asc" ? 1 : -1;
 
-	const result = await getOrdersByVendorService(id, {
-		page,
-		limit,
-		search,
-		status,
-		paymentMethod,
-		paymentStatus,
-		dateFrom,
-		dateTo,
-		sortDir
-	});
+  let search = req.query.search ? String(req.query.search).trim() : "";
+  if (search.length > 80) search = search.slice(0, 80);
+  search = search ? sanitizeMongoInput(search) : "";
 
-	res.json(result);
+  const STATUS_ALLOWED = new Set([
+    "pending",
+    "paid",
+    "shipped",
+    "delivered",
+    "cancelled",
+    "refund_requested",
+    "refund_approved",
+    "refunded",
+  ]);
+
+  const PAYMENT_METHOD_ALLOWED = new Set(["qrph", "card", "gcash", "paymaya", "cod"]);
+  const PAYMENT_STATUS_ALLOWED = new Set(["pending", "paid", "failed", "refunded"]);
+
+  const rawStatus =
+    req.query.status && req.query.status !== "all" ? String(req.query.status).trim() : null;
+  const status = rawStatus && STATUS_ALLOWED.has(rawStatus) ? rawStatus : null;
+
+  const rawPm =
+    req.query.paymentMethod && req.query.paymentMethod !== "all"
+      ? String(req.query.paymentMethod).trim()
+      : null;
+  const paymentMethod = rawPm && PAYMENT_METHOD_ALLOWED.has(rawPm) ? rawPm : null;
+
+  const rawPs =
+    req.query.paymentStatus && req.query.paymentStatus !== "all"
+      ? String(req.query.paymentStatus).trim()
+      : null;
+  const paymentStatus = rawPs && PAYMENT_STATUS_ALLOWED.has(rawPs) ? rawPs : null;
+
+  const parseDate = (v) => {
+    if (!v) return null;
+    const d = new Date(v);
+    return Number.isNaN(d.getTime()) ? null : d;
+  };
+
+  const dateFrom = parseDate(req.query.dateFrom);
+  const dateTo = parseDate(req.query.dateTo);
+
+  const result = await getOrdersByVendorService(id, {
+    page,
+    limit,
+    search,
+    status,
+    paymentMethod,
+    paymentStatus,
+    dateFrom,
+    dateTo,
+    sortDir,
+  });
+
+  res.json(result);
 });
+
 
 exports.getOrdersByProduct = asyncHandler(async (req, res) => {
 	const { productId } = req.params;

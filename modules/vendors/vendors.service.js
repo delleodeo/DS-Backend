@@ -561,17 +561,21 @@ exports.batchResetMonthlyRevenue = async () => {
  * @param {String} vendorId - The vendor's user ID
  * @returns {Object} Financial summary with earnings, commissions, and order breakdown
  */
-exports.getVendorFinancials = async (vendorId) => {
+exports.getVendorFinancials = async (vendorId, { page = 1, limit = 12 } = {}) => {
   try {
     const vendor =
       (await Vendor.findOne({ userId: vendorId })) ||
       (await Vendor.findById(vendorId));
     const effectiveCommissionRate = vendor?.commissionRate ?? COMMISSION_RATE;
-    // Get all orders for this vendor that are delivered
-    const orders = await Order.find({
+
+    // For aggregates and monthly breakdown we need to inspect relevant orders
+    const baseFilter = {
       vendorId: vendorId,
       status: { $in: ["delivered", "completed"] },
-    })
+    };
+
+    // Fetch only needed fields for aggregate calculations to reduce memory pressure
+    const orders = await Order.find(baseFilter)
       .sort({ createdAt: -1 })
       .lean();
 
@@ -585,8 +589,6 @@ exports.getVendorFinancials = async (vendorId) => {
     let pendingAdminRelease = 0;
     let netReleased = 0;
     let netExpected = 0;
-
-    const orderHistory = [];
 
     for (const order of orders) {
       const grossAmount = order.subTotal || 0;
@@ -640,22 +642,6 @@ exports.getVendorFinancials = async (vendorId) => {
           netReleased += netEarnings;
         }
       }
-
-      orderHistory.push({
-        orderId: order._id,
-        orderNumber:
-          order.orderNumber || order._id.toString().slice(-8).toUpperCase(),
-        date: order.createdAt,
-        status: order.status,
-        paymentMethod: paymentMethod,
-        paymentStatus: order.paymentStatus || "pending",
-        grossAmount: grossAmount,
-        commissionAmount: commissionAmount,
-        commissionStatus: commissionStatus,
-        netEarnings: netEarnings,
-        payoutStatus: payoutStatus,
-        buyerName: order.shippingAddress?.fullName || "N/A",
-      });
     }
 
     // Get monthly breakdown for current year
@@ -713,6 +699,45 @@ exports.getVendorFinancials = async (vendorId) => {
       }
     });
 
+    // Paginated recent orders - perform a separate query with skip/limit
+    const totalRecentOrders = await Order.countDocuments(baseFilter);
+    const pageNum = Math.max(1, Number(page) || 1);
+    // Enforce a maximum page limit of 12 per requirements
+    const pageLimit = Math.max(1, Math.min(12, Number(limit) || 12));
+
+    const recentOrdersQuery = await Order.find(baseFilter)
+      .sort({ createdAt: -1 })
+      .skip((pageNum - 1) * pageLimit)
+      .limit(pageLimit)
+      .lean();
+
+    const orderHistoryPage = recentOrdersQuery.map((order) => {
+      const grossAmount = order.subTotal || 0;
+      const orderCommissionRate = order.commissionRate ?? effectiveCommissionRate;
+      const commissionAmount =
+        order.commissionAmount ||
+        parseFloat((grossAmount * orderCommissionRate).toFixed(2));
+      const netEarnings =
+        order.sellerEarnings ||
+        parseFloat((grossAmount - commissionAmount).toFixed(2));
+
+      return {
+        orderId: order._id,
+        orderNumber:
+          order.orderNumber || order._id.toString().slice(-8).toUpperCase(),
+        date: order.createdAt,
+        status: order.status,
+        paymentMethod: order.paymentMethod || "COD",
+        paymentStatus: order.paymentStatus || "pending",
+        grossAmount: grossAmount,
+        commissionAmount: commissionAmount,
+        commissionStatus: order.commissionStatus || "pending",
+        netEarnings: netEarnings,
+        payoutStatus: order.payoutStatus || "not_applicable",
+        buyerName: order.shippingAddress?.fullName || "N/A",
+      };
+    });
+
     return {
       success: true,
       summary: {
@@ -728,10 +753,15 @@ exports.getVendorFinancials = async (vendorId) => {
           digitalPaymentCommission.toFixed(2),
         ),
         commissionRate: (effectiveCommissionRate || COMMISSION_RATE) * 100,
-        totalOrders: orders.length,
+        totalOrders: totalRecentOrders,
       },
       monthlyBreakdown,
-      recentOrders: orderHistory.slice(0, 20), // Last 20 orders
+      recentOrders: {
+        data: orderHistoryPage,
+        page: pageNum,
+        limit: pageLimit,
+        total: totalRecentOrders,
+      },
     };
   } catch (error) {
     console.error("Get Vendor Financials Error:", error);

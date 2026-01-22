@@ -1,7 +1,4 @@
-/**
- * Notification Routes
- * API endpoints for notification management
- */
+
 const express = require('express');
 const router = express.Router();
 const { param, query } = require('express-validator');
@@ -12,7 +9,7 @@ const rateLimiter = require('../../utils/rateLimiter');
 // Rate limiter
 const standardLimiter = rateLimiter({
   windowMs: 15 * 60 * 1000,
-  max: 100
+  max: 50
 });
 
 // Validation rules
@@ -41,11 +38,7 @@ const listValidation = [
     .withMessage('unreadOnly must be true or false')
 ];
 
-/**
- * @route GET /api/v1/notifications
- * @desc Get notifications for logged-in user
- * @access Private
- */
+
 router.get(
   '/',
   protect,

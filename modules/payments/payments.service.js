@@ -1254,6 +1254,11 @@ class PaymentService {
   async approveWithdrawal(adminId, paymentId, options = {}) {
     const { adminProofUrl = null, payoutRef = null } = options;
 
+    if (!isValidObjectId(adminId))
+      throw new ValidationError("Invalid admin ID");
+    if (!isValidObjectId(paymentId))
+      throw new ValidationError("Invalid payment ID");
+
     const vendorWithdrawalsCacheKey = cacheKeyVendorWithdrawal(
       "*",
       "*",
@@ -1300,6 +1305,18 @@ class PaymentService {
   }
 
   async rejectWithdrawal(adminId, paymentId, reason = "") {
+    const vendorWithdrawalsCacheKey = cacheKeyVendorWithdrawal(
+      "*",
+      "*",
+      "*",
+      "*",
+    );
+
+    if (!isValidObjectId(adminId))
+      throw new ValidationError("Invalid admin ID");
+    if (!isValidObjectId(paymentId))
+      throw new ValidationError("Invalid payment ID");
+
     try {
       const payment = await Payment.findById(paymentId);
       if (!payment) {
@@ -1367,6 +1384,12 @@ class PaymentService {
 
   async updateWithdrawalStatus(adminId, paymentId, status, options = {}) {
     const { adminProofUrl = null, payoutRef = null, reason = null } = options;
+
+    if (!isValidObjectId(adminId))
+      throw new ValidationError("Invalid admin ID");
+    if (!isValidObjectId(paymentId))
+      throw new ValidationError("Invalid payment ID");
+
     try {
       const payment = await Payment.findById(paymentId);
       if (!payment) {

@@ -10,11 +10,11 @@ const { validationResult } = require('express-validator');
  */
 const getNotifications = async (req, res, next) => {
   try {
-    if (!req.user || !req.user._id) {
+    if (!req.user || !req.user.id) {
       return res.status(401).json({ success: false, message: 'Authentication required' });
     }
     
-    const userId = req.user._id;
+    const userId = req.user.id;
     const { page = 1, limit = 20, type, unreadOnly } = req.query;
     
     const result = await notificationService.getNotifications(userId, {
@@ -38,7 +38,7 @@ const getNotifications = async (req, res, next) => {
  */
 const getUnreadCount = async (req, res, next) => {
   try {
-    const userId = req.user._id;
+    const userId = req.user.id;
     const count = await notificationService.getUnreadCount(userId);
     
     res.status(200).json({
@@ -64,7 +64,7 @@ const markAsRead = async (req, res, next) => {
     }
     
     const { notificationId } = req.params;
-    const userId = req.user._id;
+    const userId = req.user.id;
     
     const notification = await notificationService.markAsRead(notificationId, userId);
     
@@ -90,7 +90,7 @@ const markAsRead = async (req, res, next) => {
  */
 const markAllAsRead = async (req, res, next) => {
   try {
-    const userId = req.user._id;
+    const userId = req.user.id;
     const result = await notificationService.markAllAsRead(userId);
     
     res.status(200).json({
@@ -117,7 +117,7 @@ const deleteNotification = async (req, res, next) => {
     }
     
     const { notificationId } = req.params;
-    const userId = req.user._id;
+    const userId = req.user.id;
     
     const notification = await notificationService.deleteNotification(notificationId, userId);
     
@@ -142,7 +142,7 @@ const deleteNotification = async (req, res, next) => {
  */
 const deleteReadNotifications = async (req, res, next) => {
   try {
-    const userId = req.user._id;
+    const userId = req.user.id;
     const result = await notificationService.deleteReadNotifications(userId);
     
     res.status(200).json({

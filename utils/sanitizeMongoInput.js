@@ -1,41 +1,76 @@
 const sanitizeHtml = require("sanitize-html");
 
-function sanitizeMongoInput(input) {
-	if (input === null || input === undefined) return input;
+const BLOCKED_KEYS = new Set(["__proto__", "prototype", "constructor"]);
 
-	// Strip ALL HTML from strings but preserve script/style inner text
-	if (typeof input === "string") {
-		// Preserve inner text from <script> and <style> tags (test expectations rely on this)
-		let preprocessed = input.replace(/<script[^>]*>([\s\S]*?)<\/script>/gi, '$1');
-		preprocessed = preprocessed.replace(/<style[^>]*>([\s\S]*?)<\/style>/gi, '$1');
-		return sanitizeHtml(preprocessed, {
-			allowedTags: [],
-			allowedAttributes: {},
-		}).trim()
-	}
-	
+function isPlainObject(v) {
+  if (v === null || typeof v !== "object") return false;
+  const proto = Object.getPrototypeOf(v);
+  return proto === Object.prototype || proto === null;
+}
 
-	// Handle arrays
-	if (Array.isArray(input)) {
-		return input.map(item => sanitizeMongoInput(item));
-	}
+function sanitizeMongoInput(input, opts = {}) {
+  const {
+    maxDepth = 30,
+    maxKeys = 10_000,
+    maxStringLength = 200_000,
+    stripHtml = true,
+  } = opts;
 
-	// Handle objects (NoSQL injection protection)
-	if (typeof input === "object") {
-		const sanitized = {};
+  let keyCount = 0;
 
-		for (const key in input) {
-			// Block MongoDB operators and dot-notation
-			if (key.startsWith("$") || key.includes(".")) continue;
+  function walk(value, depth) {
+    if (value === null || value === undefined) return value;
+    if (depth > maxDepth) return value; // or throw new Error("Payload too deep")
 
-			sanitized[key] = sanitizeMongoInput(input[key]);
-		}
+    // Strings
+    if (typeof value === "string") {
+      let s = value;
+      if (s.length > maxStringLength) s = s.slice(0, maxStringLength);
 
-		return sanitized;
-	}
+      if (!stripHtml) return s;
 
-	// Numbers, booleans, dates
-	return input;
+      // Keep script/style inner text as plain text (your requirement)
+      s = s.replace(/<script[^>]*>([\s\S]*?)<\/script>/gi, "$1");
+      s = s.replace(/<style[^>]*>([\s\S]*?)<\/style>/gi, "$1");
+
+      // Strip all tags/attrs
+      return sanitizeHtml(s, { allowedTags: [], allowedAttributes: {} }).trim();
+    }
+
+    // Arrays
+    if (Array.isArray(value)) {
+      return value.map((item) => walk(item, depth + 1));
+    }
+
+    // Preserve special objects
+    if (value instanceof Date) return value;
+    if (Buffer.isBuffer(value)) return value;
+    if (value instanceof RegExp) return value;
+
+    // Plain objects only
+    if (isPlainObject(value)) {
+      const out = {};
+      const keys = Object.keys(value);
+
+      for (const key of keys) {
+        keyCount++;
+        if (keyCount > maxKeys) break; // or throw new Error("Too many keys")
+
+        if (BLOCKED_KEYS.has(key)) continue;
+        if (key[0] === "$") continue;
+        if (key.includes(".")) continue;
+
+        out[key] = walk(value[key], depth + 1);
+      }
+
+      return out;
+    }
+
+    // Numbers, booleans, etc + non-plain objects
+    return value;
+  }
+
+  return walk(input, 0);
 }
 
 module.exports = sanitizeMongoInput;
