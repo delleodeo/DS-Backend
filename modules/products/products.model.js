@@ -64,6 +64,9 @@ const ProductSchema = new mongoose.Schema({
 		enum: ['pending_review', 'approved', 'rejected'],
 		default: 'pending_review'
 	},
+
+  uniqueViews: { type: Number, default: 0 },
+  views: { type: Number, default: 0 },
 	
 	// Product Approval Workflow (Admin Feature)
 	approvedAt: { type: Date },

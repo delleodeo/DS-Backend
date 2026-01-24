@@ -15,7 +15,7 @@ const {
   getProductByVendor,
   getVendorOwnProducts,
   addSingleOption,
-  addProductStockMain
+  addProductStockMain,
 } = require("./products.service.js");
 const logger = require("../../utils/logger");
 
@@ -33,7 +33,7 @@ module.exports = {
       next(error);
     }
   },
-  // READ ALL (with cache + limit)	
+  // READ ALL (with cache + limit)
   async getProductsController(req, res, next) {
     try {
       const limit = Math.min(parseInt(req.query.limit) || 20, 100); // limit hard-capped at 100
@@ -74,11 +74,12 @@ module.exports = {
   // GET /products/vendor/:id/own - Get all vendor's own products (including pending/rejected)
   async getVendorOwnProductsController(req, res, next) {
     try {
-
       const { id } = req.params;
 
       if (req.user.id !== id) {
-        return res.status(403).json({ message: 'Access denied. You can only view your own products.' });
+        return res.status(403).json({
+          message: "Access denied. You can only view your own products.",
+        });
       }
 
       const vendorProducts = await getVendorOwnProducts(id);
@@ -99,7 +100,7 @@ module.exports = {
       const products = await getProductsByCategoryService(
         category,
         limit,
-        skip
+        skip,
       );
       res.json(products);
     } catch (error) {
@@ -118,7 +119,7 @@ module.exports = {
         municipality,
         category,
         limit,
-        skip
+        skip,
       );
       res.json(products);
     } catch (error) {
@@ -143,9 +144,13 @@ module.exports = {
   // READ ONE (with cache)2
   async getProductByIdController(req, res, next) {
     const { id } = req.params;
+    const visitorId = req.user?.id || req.user?._id || null;
+
     try {
-      const product = await getProductByIdService(id);
-      if (!product) return res.status(404).json({ message: "Product not found!" });
+      const product = await getProductByIdService(id, visitorId);
+      if (!product)
+        return res.status(404).json({ message: "Product not found!" });
+
       res.json(product);
     } catch (error) {
       next(error);
@@ -175,7 +180,7 @@ module.exports = {
       const updated = await updateProductOptionService(
         productId,
         optionId,
-        updateData
+        updateData,
       );
 
       if (!updated) {
@@ -292,7 +297,7 @@ module.exports = {
       if (!Number.isFinite(stockNum) || Number.isNaN(stockNum)) {
         return res.status(400).json({ error: "stock/delta must be a number." });
       }
-      const updated = await addProductStockMain(productId, 	stockNum);
+      const updated = await addProductStockMain(productId, stockNum);
       if (!updated) {
         return res.status(404).json({ error: "Product not found." });
       }

@@ -180,6 +180,7 @@ OrderSchema.pre("save", function (next) {
 
 // Indexes for commission queries
 OrderSchema.index({ commissionStatus: 1, status: 1 });
+OrderSchema.index({ vendorId: 1, commissionStatus: "delivered" });
 OrderSchema.index({ vendorId: 1, commissionStatus: 1 });
 OrderSchema.index({ paymentMethod: 1, commissionStatus: 1 });
 OrderSchema.index({ customerId: 1, status: 1 });

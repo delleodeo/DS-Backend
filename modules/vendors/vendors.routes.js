@@ -20,7 +20,7 @@ router.put(
 	vendorController.updateVendor
 );
 router.delete("/", protect, restrictTo("admin"), vendorController.deleteVendor);
-router.get("/:vendorId/details", vendorController.getVendorDetails);
+router.get("/:vendorId/details", protect, vendorController.getVendorDetails);
 
 // Analytics routes
 router.post("/profile-view/:id", vendorController.trackProfileView);

@@ -135,7 +135,7 @@ router.get(
 router.get(
   "/:id",
   rateLimiter({ windowSec: 60, maxRequests: 100, keyPrefix: "get-product" }),
-  optionalProtect,
+  protect,
   verifyProductAccess,
   productController.getProductByIdController
 );

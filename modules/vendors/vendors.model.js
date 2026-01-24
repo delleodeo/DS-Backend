@@ -18,7 +18,7 @@ const MonthlyRevenueData = new mongoose.Schema(
       December: { type: Number, default: 0 },
     },
   },
-  { _id: false }
+  { _id: false },
 );
 
 const AddressSchema = new mongoose.Schema(
@@ -31,7 +31,7 @@ const AddressSchema = new mongoose.Schema(
     region: String,
     additionalInfo: String,
   },
-  { _id: false }
+  { _id: false },
 );
 
 // GeoJSON Point schema for shop location
@@ -39,15 +39,15 @@ const LocationSchema = new mongoose.Schema(
   {
     type: {
       type: String,
-      enum: ['Point'],
-      default: 'Point'
+      enum: ["Point"],
+      default: "Point",
     },
     coordinates: {
       type: [Number], // [longitude, latitude]
-      required: true
-    }
+      required: true,
+    },
   },
-  { _id: false }
+  { _id: false },
 );
 
 const VendorSchema = new mongoose.Schema({
@@ -64,7 +64,7 @@ const VendorSchema = new mongoose.Schema({
   address: AddressSchema,
   imageUrl: String, // Logo or profile image
   bannerUrl: String, // Optional banner
-  
+
   // Shop location for map display
   location: LocationSchema,
 
@@ -80,10 +80,6 @@ const VendorSchema = new mongoose.Schema({
 
   // Financials
   commissionRate: { type: Number, default: 0.07 },
-  // accountBalance: {
-  //   cash: { type: Number, default: 0 },
-  //   usdt: { type: Number, default: 0 },
-  // },
 
   // Dashboard Stats
   totalProducts: { type: Number, default: 0 },
@@ -93,8 +89,13 @@ const VendorSchema = new mongoose.Schema({
 
   gcashNumber: String,
 
-  // Analytics
+  uniqueViews: { type: Number, default: 0 },
+  views: { type: Number, default: 0 },
+
   profileViews: { type: Number, default: 0 },
+  uniqueProfileViews: { type: Number, default: 0 },
+
+  // Analytics
   productClicks: { type: Number, default: 0 },
   currentMonthlyRevenue: { type: Number, default: 0 },
   monthlyRevenueComparison: [MonthlyRevenueData],
@@ -110,6 +111,6 @@ VendorSchema.pre("save", function (next) {
 });
 
 // 2dsphere index for geospatial queries (find nearby shops)
-VendorSchema.index({ location: '2dsphere' });
+VendorSchema.index({ location: "2dsphere" });
 
 module.exports = mongoose.model("Vendor", VendorSchema);

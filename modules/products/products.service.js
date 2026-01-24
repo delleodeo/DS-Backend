@@ -55,7 +55,7 @@ async function invalidateAllProductCaches(productId, vendorId = null) {
   } catch (err) {
     logger.warn(
       "[invalidateAllProductCaches] Cache invalidation encountered an error:",
-      err
+      err,
     );
   }
 }
@@ -104,9 +104,9 @@ async function getPaginatedProducts(skip = 1, limit) {
 async function createProductService(data) {
   // Preserve raw HTML description before sanitization
   const rawDescription = data?.description;
-  
+
   data = sanitizeMongoInput(data);
-  
+
   // Restore the HTML description so the model's pre-save hook can properly sanitize it
   if (rawDescription) {
     data.description = rawDescription;
@@ -129,11 +129,11 @@ async function createProductService(data) {
 
     // If product is already approved at create time, add to product metadata lists
     try {
-      if (newProduct.isApproved || newProduct.status === 'approved') {
+      if (newProduct.isApproved || newProduct.status === "approved") {
         await productMetaService.addProductMetadata(newProduct);
       }
     } catch (metaErr) {
-      logger.error('[ProductMeta] add on create failed:', metaErr);
+      logger.error("[ProductMeta] add on create failed:", metaErr);
       // Do not fail the create operation because metadata update failed
     }
 
@@ -301,7 +301,7 @@ async function searchProductsService(query, limit = 0, skip = 0) {
   const terms = query.toLowerCase().trim().split(/\s+/);
   const { limit: limitNum, skip: skipNum } = sanitizePagination(limit, skip);
   const cacheKey = `products:search:${terms.join(
-    "-"
+    "-",
   )}:limit:${limitNum}:skip:${skipNum}`;
 
   let paginated = await cache.get(cacheKey);
@@ -320,7 +320,7 @@ async function searchProductsService(query, limit = 0, skip = 0) {
     const textQuery = { $text: { $search: query } };
     paginated = await Product.find(
       { ...baseQuery, ...textQuery, stock: { $gt: 0 } },
-      { score: { $meta: "textScore" } }
+      { score: { $meta: "textScore" } },
     )
       .sort({ score: { $meta: "textScore" }, createdAt: -1 })
       .skip(skipNum)
@@ -408,7 +408,7 @@ async function getVendorOwnProducts(vendorId) {
   return productsWithVirtuals;
 }
 
-async function getProductByIdService(id) {
+async function getProductByIdService(id, visitorId = null) {
   id = sanitizeMongoInput(id);
 
   if (!isValidObjectId(id)) {
@@ -425,12 +425,20 @@ async function getProductByIdService(id) {
     return cloned;
   }
 
-  const productDoc = await Product.findById(id);
+  const productDoc = await Product.findById(id).lean();
+
+  const {trackProductView,} = require("../vendors/subcriptors/subscriptor.sevice.js");
+  await trackProductView({
+    productId: id,
+    visitorId,
+    vendorUserId: productDoc.vendorId,
+  });
+  // ({ productId, visitorId })
   if (!productDoc) {
     throw createError("Product not found", 404);
   }
 
-  const product = productDoc.toObject();
+  const product = productDoc;
 
   // Validate and clean expired promotions before returning
   validateAndCleanPromotions(product);
@@ -457,10 +465,10 @@ async function getProductByIdService(id) {
 async function updateProductService(id, data) {
   // Preserve raw HTML description before sanitization
   const rawDescription = data?.description;
-  
+
   id = sanitizeMongoInput(id);
   data = sanitizeMongoInput(data);
-  
+
   // Restore the HTML description so the model's pre-save hook can properly sanitize it
   if (rawDescription) {
     data.description = rawDescription;
@@ -497,7 +505,7 @@ async function updateProductService(id, data) {
   try {
     await productMetaService.handleProductUpdate(prevProduct, updatedProduct);
   } catch (err) {
-    logger.error('[ProductMeta] handleProductUpdate failed:', err);
+    logger.error("[ProductMeta] handleProductUpdate failed:", err);
     // don't let metadata failures break product updates
   }
 
@@ -535,7 +543,7 @@ async function updateProductOptionService(productId, optionId, updateData) {
   const updated = await Product.findOneAndUpdate(
     { _id: productId, "option._id": optionId },
     { $set: updateFields },
-    { new: true, runValidators: true, context: "query" }
+    { new: true, runValidators: true, context: "query" },
   );
 
   if (!updated) {
@@ -572,13 +580,13 @@ async function addProductStock(productId, optionId, addition) {
         "option.stock": { $gte: -addition },
       },
       { $inc: { "option.$.stock": addition } },
-      { new: true, runValidators: true, context: "query" }
+      { new: true, runValidators: true, context: "query" },
     );
 
     if (!updated) {
       throw createError(
         "Product or option not found or insufficient stock",
-        404
+        404,
       );
     }
 
@@ -591,7 +599,7 @@ async function addProductStock(productId, optionId, addition) {
   const updated = await Product.findOneAndUpdate(
     { _id: productId, stock: { $gte: -addition } },
     { $inc: { stock: addition } },
-    { new: true }
+    { new: true },
   );
 
   if (!updated) {
@@ -619,7 +627,7 @@ async function addProductStockMain(productId, addition) {
   let updated = await Product.findOneAndUpdate(
     { _id: productId, stock: { $gte: -addition } },
     { $inc: { stock: addition } },
-    { new: true }
+    { new: true },
   );
 
   if (!updated) {
@@ -649,7 +657,7 @@ async function deleteProductService(id) {
     // Atomically delete product and return deleted document
     const deletedProduct = await Product.findOneAndDelete(
       { _id: id },
-      { session }
+      { session },
     );
     if (!deletedProduct) {
       throw createError("Product not found", 404);
@@ -669,7 +677,7 @@ async function deleteProductService(id) {
         const publicId = extractPublicIdFromUrl(url);
         if (!publicId) {
           logger.warn(
-            `[Product Delete] Failed to extract public_id from URL: ${url}`
+            `[Product Delete] Failed to extract public_id from URL: ${url}`,
           );
         }
         return publicId;
@@ -683,16 +691,16 @@ async function deleteProductService(id) {
       try {
         const deleteResult = await deleteBatchFromCloudinary(publicIds);
         logger.info(
-          `[Product Delete] Cloudinary deletion result: ${deleteResult.successful}/${deleteResult.total} images deleted successfully`
+          `[Product Delete] Cloudinary deletion result: ${deleteResult.successful}/${deleteResult.total} images deleted successfully`,
         );
 
         if (deleteResult.failed > 0) {
           logger.error(
-            `[Product Delete] Failed to delete ${deleteResult.failed} images from Cloudinary`
+            `[Product Delete] Failed to delete ${deleteResult.failed} images from Cloudinary`,
           );
           logger.error(
             "[Product Delete] Deletion details:",
-            JSON.stringify(deleteResult.details, null, 2)
+            JSON.stringify(deleteResult.details, null, 2),
           );
         }
       } catch (error) {
@@ -700,7 +708,7 @@ async function deleteProductService(id) {
           `[Product Delete] Exception during Cloudinary deletion: ${
             error?.message || error
           }`,
-          error
+          error,
         );
         // Log error but don't fail the operation since DB is already deleted
       }
@@ -716,12 +724,12 @@ async function deleteProductService(id) {
     try {
       await productMetaService.removeProductMetadata(deletedProduct);
     } catch (metaErr) {
-      logger.error('[ProductMeta] remove on delete failed:', metaErr);
+      logger.error("[ProductMeta] remove on delete failed:", metaErr);
       // Swallow metadata errors, deletion already succeeded
     }
 
     logger.info(
-      `[Product Delete] Successfully deleted product ${id} from database`
+      `[Product Delete] Successfully deleted product ${id} from database`,
     );
 
     return true;
@@ -759,11 +767,11 @@ async function removeVariantData(productId, variantId) {
   logger.debug(
     `[removeVariantData] Product ${productId} has ${
       product.option?.length || 0
-    } options`
+    } options`,
   );
 
   const variantToRemove = product.option.find(
-    (opt) => opt._id.toString() === variantId
+    (opt) => opt._id.toString() === variantId,
   );
   if (!variantToRemove) {
     throw createError("Variant not found", 404);
@@ -805,7 +813,7 @@ async function removeVariantData(productId, variantId) {
   const updated = await Product.findOneAndUpdate(
     { _id: productId, "option._id": variantId },
     { $pull: { option: { _id: variantId } } },
-    { new: true }
+    { new: true },
   );
 
   if (!updated) {
@@ -819,11 +827,11 @@ async function removeVariantData(productId, variantId) {
   // Recalculate aggregates on updated doc
   updated.stock = (updated.option || []).reduce(
     (sum, o) => sum + (o.stock || 0),
-    0
+    0,
   );
   updated.sold = (updated.option || []).reduce(
     (sum, o) => sum + (o.sold || 0),
-    0
+    0,
   );
   updated.isOption = (updated.option || []).length > 0;
 
@@ -849,7 +857,7 @@ function reassignMainImageIfNeeded(product, removedVariantImageUrl) {
   if (!usedAsMain) return { modified: false };
 
   product.imageUrls = product.imageUrls.filter(
-    (u) => u !== removedVariantImageUrl
+    (u) => u !== removedVariantImageUrl,
   );
   ensureMainImage(product);
   return { modified: true };
@@ -902,10 +910,10 @@ async function removeVariant(productId, variantId) {
       dataResult.publicIdsToCleanup.length > 0
     ) {
       const cleanupResult = await cleanupVariantImages(
-        dataResult.publicIdsToCleanup
+        dataResult.publicIdsToCleanup,
       );
       logger.info(
-        `[removeVariant] cleanup result: ${cleanupResult.successful}/${cleanupResult.total} removed`
+        `[removeVariant] cleanup result: ${cleanupResult.successful}/${cleanupResult.total} removed`,
       );
     }
 
@@ -928,7 +936,7 @@ async function removeVariant(productId, variantId) {
   if (publicIds.length > 0) {
     const cleanupResult = await cleanupVariantImages(publicIds);
     logger.info(
-      `[removeVariant] variant image cleanup result: ${cleanupResult.successful}/${cleanupResult.total}`
+      `[removeVariant] variant image cleanup result: ${cleanupResult.successful}/${cleanupResult.total}`,
     );
   }
 
@@ -999,7 +1007,7 @@ async function addSingleOption(productId, optionData) {
       if (labelExists) {
         throw createError(
           "Option with this label already exists for this product",
-          409
+          409,
         );
       }
 
@@ -1011,7 +1019,7 @@ async function addSingleOption(productId, optionData) {
           $inc: { stock: newOption.stock || 0, sold: newOption.sold || 0 },
           $set: { isOption: true },
         },
-        { session }
+        { session },
       );
 
       await session.commitTransaction();
@@ -1043,7 +1051,7 @@ async function addSingleOption(productId, optionData) {
       $inc: { stock: newOption.stock || 0, sold: newOption.sold || 0 },
       $set: { isOption: true },
     },
-    { new: true }
+    { new: true },
   );
 
   if (!updated) {

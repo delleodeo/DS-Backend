@@ -1,15 +1,14 @@
-// vendor.service.js
 const Vendor = require("./vendors.model");
 const Order = require("../orders/orders.model");
 const VendorWallet = require("../wallet/vendorWallet.model.js");
-
+const { getBySellerId } = require("../subscription/subscription.service.js");
 const { getRedisClient, isRedisAvailable } = require("../../config/redis");
 
 const redisClient = getRedisClient();
 
 const getVendorCacheKey = (vendorId) => `vendor:${vendorId}`;
 const getVendorDetailsKey = (vendorId) => `vendor:details:${vendorId}`;
-const COMMISSION_RATE = 0.07; // 7% platform commission
+const COMMISSION_RATE = 0.07;
 
 exports.createVendor = async (vendorData, vendorId) => {
   const isExist = await Vendor.findOne({ userId: vendorId });
@@ -35,41 +34,26 @@ exports.followVendor = async (vendorId, userId) => {
       await safeDel(`vendor:details:${vendorId}`);
     }
 
-    // Support both vendor _id and vendor.userId in the route param
     let vendor = await Vendor.findById(vendorId);
-    if (!vendor) {
-      vendor = await Vendor.findOne({ userId: vendorId });
-    }
-
-    if (!vendor) {
-      throw new Error("Vendor not found");
-    }
-
-    // Prevent users from following themselves
-    if (String(vendor.userId) === String(userId)) {
+    if (!vendor) vendor = await Vendor.findOne({ userId: vendorId });
+    if (!vendor) throw new Error("Vendor not found");
+    if (String(vendor.userId) === String(userId))
       throw new Error("You cannot follow your own shop");
-    }
 
-    // Convert userId to string for consistent comparison
     const userIdStr = String(userId);
-
     const isFollowing = vendor.followers.map(String).includes(userIdStr);
 
     if (isFollowing) {
-      // Unfollow logic: remove userId from array
       vendor.followers = vendor.followers.filter(
         (id) => String(id) !== userIdStr,
       );
-
       await vendor.save();
-
       return {
         message: "Unfollowed successfully",
         totalFollowers: vendor.followers.length,
       };
     }
 
-    // Follow logic: add userId
     vendor.followers.push(userIdStr);
     await vendor.save();
 
@@ -85,7 +69,7 @@ exports.followVendor = async (vendorId, userId) => {
 
 exports.getFeaturedVendor = async () => {
   try {
-    const featuredVendorKey = "vendor:featured"; // ✅ static or generated cache key
+    const featuredVendorKey = "vendor:featured";
     if (isRedisAvailable()) {
       const cached = await redisClient.get(featuredVendorKey);
       if (cached) return JSON.parse(cached);
@@ -93,27 +77,24 @@ exports.getFeaturedVendor = async () => {
 
     const featuredVendor = await Vendor.find()
       .select("storeName userId imageUrl")
-      .lean(); // 🧠 use lean() for better perf
+      .lean();
     const paginated = featuredVendor.slice(0, 10);
 
-    // ✅ Properly return object in map
     const filteredData = paginated.map((data) => ({
       storeName: data.storeName,
       userId: data.userId,
       imageUrl: data.imageUrl,
     }));
 
-    // ✅ Cache only if data exists
     if (filteredData.length > 0 && isRedisAvailable()) {
       await redisClient.set(featuredVendorKey, JSON.stringify(filteredData), {
-        EX: 300, // 5 minutes
+        EX: 300,
       });
     }
 
     return filteredData;
   } catch (error) {
     console.error("Get Featured Vendor Error:", error);
-    // Fallback to DB if Redis fails
     const featuredVendor = await Vendor.find()
       .select("storeName userId imageUrl")
       .lean();
@@ -126,7 +107,7 @@ exports.getFeaturedVendor = async () => {
   }
 };
 
-exports.getVendorDetails = async (vendorId) => {
+exports.getVendorDetails = async (vendorId, userId) => {
   try {
     if (isRedisAvailable()) {
       const cached = await redisClient.get(getVendorDetailsKey(vendorId));
@@ -139,11 +120,14 @@ exports.getVendorDetails = async (vendorId) => {
       )
       .populate("followers", "name email _id");
 
-    if (!vendor) {
-      throw new Error("Vendor not found");
-    }
+    if (!vendor) throw new Error("Vendor not found");
 
-    // Get count of approved products only
+    const {
+      trackVendorView,
+    } = require("../vendors/subcriptors/subscriptor.sevice.js");
+
+    await trackVendorView({ vendorUserId: vendorId, visitorId: userId || null });
+
     const Product = require("../products/products.model");
     const approvedProductCount = await Product.countDocuments({
       vendor: vendorId,
@@ -151,26 +135,21 @@ exports.getVendorDetails = async (vendorId) => {
       isDisabled: { $ne: true },
     });
 
-    // Get total completed orders (actual sales count)
     const Order = require("../orders/orders.model");
     const completedOrders = await Order.countDocuments({
       vendor: vendorId,
       status: { $in: ["completed", "delivered"] },
     });
 
-    // Get total reviews for this vendor's products
     const Review = require("../reviews/review.model");
-    const totalReviews = await Review.countDocuments({
-      vendor: vendorId,
-    });
+    const totalReviews = await Review.countDocuments({ vendor: vendorId });
 
-    // Build enriched vendor data
     const vendorData = vendor.toObject();
     vendorData.approvedProducts = approvedProductCount;
     vendorData.totalSales = completedOrders;
     vendorData.totalReviews = totalReviews;
-    vendorData.responseRate = 95; // Default, can be calculated from message data
-    vendorData.responseTime = "Within 1 hour"; // Default, can be calculated
+    vendorData.responseRate = 95;
+    vendorData.responseTime = "Within 1 hour";
     vendorData.isVerified = vendor.isApproved !== false;
 
     if (isRedisAvailable()) {
@@ -195,43 +174,40 @@ exports.getVendorDetails = async (vendorId) => {
 
 exports.getVendorById = async (vendorId) => {
   const cacheKey = getVendorCacheKey(vendorId);
-  if (isRedisAvailable()) {
-    const cached = await redisClient.get(cacheKey);
-    if (cached) return JSON.parse(cached);
+  try {
+    if (isRedisAvailable()) {
+      const cached = await redisClient.get(cacheKey);
+      if (cached) return JSON.parse(cached);
+    }
+
+    const vendor = await Vendor.findOne({ userId: vendorId }).populate(
+      "followers",
+      "name email",
+    );
+    if (!vendor) throw new Error("Vendor not found");
+
+    const wallet = await VendorWallet.getOrCreateForUser(vendorId);
+    const calculatedStats = await exports.calculateVendorStats(vendorId);
+
+    const vendorData = vendor.toObject();
+    vendorData.wallet = wallet?.balance || 0;
+    vendorData.totalOrders = calculatedStats.totalOrders;
+    vendorData.totalRevenue = calculatedStats.totalRevenue;
+    vendorData.currentMonthlyRevenue = calculatedStats.currentMonthlyRevenue;
+    vendorData.monthlyRevenueComparison =
+      calculatedStats.monthlyRevenueComparison;
+
+    if (isRedisAvailable()) {
+      await redisClient.set(cacheKey, JSON.stringify(vendorData), { EX: 300 });
+    }
+
+    console.log("Vendor:", vendorData.monthlyRevenueComparison);
+    return vendorData;
+  } catch (error) {
+    throw new Error("Failed to fetch vendor data");
   }
-
-  const vendor = await Vendor.findOne({ userId: vendorId }).populate(
-    "followers",
-    "name email",
-  );
-  if (!vendor) throw new Error("Vendor not found");
-
-  const wallet = await VendorWallet.getOrCreateForUser(vendorId);
-
-  // Calculate stats on-demand from orders in database
-  const calculatedStats = await exports.calculateVendorStats(vendorId);
-  const vendorData = vendor.toObject();
-  vendorData.wallet = wallet?.balance || 0;
-  vendorData.totalOrders = calculatedStats.totalOrders;
-  vendorData.totalRevenue = calculatedStats.totalRevenue;
-  vendorData.currentMonthlyRevenue = calculatedStats.currentMonthlyRevenue;
-  vendorData.monthlyRevenueComparison =
-    calculatedStats.monthlyRevenueComparison;
-
-  if (isRedisAvailable()) {
-    await redisClient.set(cacheKey, JSON.stringify(vendorData), { EX: 300 });
-  }
-
-  console.log("Vendor:", vendorData);
-  return vendorData;
 };
 
-/**
- * Calculate vendor stats on-demand from orders in database
- * This ensures data accuracy by not relying on incremental updates
- * @param {String} vendorId - The vendor's user ID
- * @returns {Object} Calculated stats from orders
- */
 exports.calculateVendorStats = async (vendorId) => {
   try {
     const MONTH_NAMES = [
@@ -249,7 +225,6 @@ exports.calculateVendorStats = async (vendorId) => {
       "December",
     ];
 
-    // Get all delivered/completed orders for this vendor
     const orders = await Order.find({
       vendorId: vendorId,
       status: { $in: ["delivered", "completed"] },
@@ -263,17 +238,17 @@ exports.calculateVendorStats = async (vendorId) => {
     for (const order of orders) {
       const gross = order.subTotal || 0;
       totalRevenue += gross;
+
       const d = new Date(order.createdAt);
       const year = d.getFullYear();
       const monthName = MONTH_NAMES[d.getMonth()];
       const key = `${year}:${monthName}`;
-      if (!monthlyMap.has(key)) {
+
+      if (!monthlyMap.has(key))
         monthlyMap.set(key, { year, monthName, total: 0 });
-      }
       monthlyMap.get(key).total += gross;
     }
 
-    // Build monthlyRevenueComparison
     const groupedByYear = {};
     for (const { year, monthName, total } of monthlyMap.values()) {
       if (!groupedByYear[year]) {
@@ -303,6 +278,7 @@ exports.calculateVendorStats = async (vendorId) => {
     const now = new Date();
     const currentMonthName = MONTH_NAMES[now.getMonth()];
     const currentYear = now.getFullYear();
+
     const currentMonthRevenue =
       monthlyRevenueComparison.find((c) => c.year === currentYear)?.revenues[
         currentMonthName
@@ -356,10 +332,11 @@ exports.incrementProfileViews = async (userId) => {
     { $inc: { profileViews: 1 } },
     { new: true },
   );
-  if (vendor && isRedisAvailable())
+  if (vendor && isRedisAvailable()) {
     await redisClient.set(getVendorCacheKey(userId), JSON.stringify(vendor), {
       EX: 3600,
     });
+  }
 };
 
 exports.incrementProductClicks = async (userId) => {
@@ -368,20 +345,13 @@ exports.incrementProductClicks = async (userId) => {
     { $inc: { productClicks: 1 } },
     { new: true },
   );
-  if (vendor && isRedisAvailable())
+  if (vendor && isRedisAvailable()) {
     await redisClient.set(getVendorCacheKey(userId), JSON.stringify(vendor), {
       EX: 3600,
     });
+  }
 };
 
-/**
- * Push monthly revenue to monthlyRevenueComparison at the end of each month
- * @param {String} userId - The vendor's user ID
- * @param {Number} revenueAmount - The total revenue for the month
- * @param {Number} year - The year (optional, defaults to current year)
- * @param {String} month - The month name (optional, defaults to current month)
- * @returns {Object} Updated vendor document
- */
 exports.pushMonthlyRevenue = async (
   userId,
   revenueAmount,
@@ -407,24 +377,18 @@ exports.pushMonthlyRevenue = async (
     ];
     const targetMonth = month || monthNames[currentDate.getMonth()];
 
-    // Find the vendor
     const vendor = await Vendor.findOne({ userId });
-    if (!vendor) {
-      throw new Error("Vendor not found");
-    }
+    if (!vendor) throw new Error("Vendor not found");
 
-    // Find if the year already exists in monthlyRevenueComparison
     const yearIndex = vendor.monthlyRevenueComparison.findIndex(
       (data) => data.year === targetYear,
     );
 
     if (yearIndex !== -1) {
-      // Year exists, update the specific month
       vendor.monthlyRevenueComparison[yearIndex].revenues[targetMonth] =
         revenueAmount;
     } else {
-      // Year doesn't exist, create new year entry
-      const newYearData = {
+      vendor.monthlyRevenueComparison.push({
         year: targetYear,
         revenues: {
           January: 0,
@@ -441,14 +405,11 @@ exports.pushMonthlyRevenue = async (
           December: 0,
           [targetMonth]: revenueAmount,
         },
-      };
-      vendor.monthlyRevenueComparison.push(newYearData);
+      });
     }
 
-    // Save the updated vendor
     await vendor.save();
 
-    // Clear cache
     const { safeDel } = require("../../config/redis");
     await safeDel(getVendorCacheKey(userId));
 
@@ -463,18 +424,10 @@ exports.pushMonthlyRevenue = async (
   }
 };
 
-/**
- * Reset current month's revenue (use at start of new month if needed)
- * Note: Revenue is now pushed to monthlyRevenueComparison immediately on each sale
- * @param {String} userId - The vendor's user ID
- * @returns {Object} Updated vendor document
- */
 exports.resetCurrentMonthRevenue = async (userId) => {
   try {
     const vendor = await Vendor.findOne({ userId });
-    if (!vendor) {
-      throw new Error("Vendor not found");
-    }
+    if (!vendor) throw new Error("Vendor not found");
 
     const currentDate = new Date();
     const currentYear = currentDate.getFullYear();
@@ -494,11 +447,9 @@ exports.resetCurrentMonthRevenue = async (userId) => {
     ];
     const currentMonth = monthNames[currentDate.getMonth()];
 
-    // Reset currentMonthlyRevenue to 0 for the new month
     vendor.currentMonthlyRevenue = 0;
     await vendor.save();
 
-    // Clear cache
     const { safeDel } = require("../../config/redis");
     await safeDel(getVendorCacheKey(userId));
 
@@ -513,18 +464,10 @@ exports.resetCurrentMonthRevenue = async (userId) => {
   }
 };
 
-/**
- * Batch reset all vendors' currentMonthlyRevenue at month start
- * Optional: Use this with a cron job at the start of each month
- * @returns {Object} Summary of processed vendors
- */
 exports.batchResetMonthlyRevenue = async () => {
   try {
     const vendors = await Vendor.find({});
-    const results = {
-      success: [],
-      failed: [],
-    };
+    const results = { success: [], failed: [] };
 
     for (const vendor of vendors) {
       try {
@@ -535,10 +478,7 @@ exports.batchResetMonthlyRevenue = async () => {
           `Failed to reset revenue for vendor ${vendor.userId}:`,
           error,
         );
-        results.failed.push({
-          userId: vendor.userId,
-          error: error.message,
-        });
+        results.failed.push({ userId: vendor.userId, error: error.message });
       }
     }
 
@@ -556,30 +496,23 @@ exports.batchResetMonthlyRevenue = async () => {
   }
 };
 
-/**
- * Get vendor financial summary with commission breakdown
- * @param {String} vendorId - The vendor's user ID
- * @returns {Object} Financial summary with earnings, commissions, and order breakdown
- */
-exports.getVendorFinancials = async (vendorId, { page = 1, limit = 12 } = {}) => {
+exports.getVendorFinancials = async (
+  vendorId,
+  { page = 1, limit = 12 } = {},
+) => {
   try {
     const vendor =
       (await Vendor.findOne({ userId: vendorId })) ||
       (await Vendor.findById(vendorId));
     const effectiveCommissionRate = vendor?.commissionRate ?? COMMISSION_RATE;
 
-    // For aggregates and monthly breakdown we need to inspect relevant orders
     const baseFilter = {
       vendorId: vendorId,
       status: { $in: ["delivered", "completed"] },
     };
 
-    // Fetch only needed fields for aggregate calculations to reduce memory pressure
-    const orders = await Order.find(baseFilter)
-      .sort({ createdAt: -1 })
-      .lean();
+    const orders = await Order.find(baseFilter).sort({ createdAt: -1 }).lean();
 
-    // Calculate totals
     let totalGrossRevenue = 0;
     let totalCommissionPaid = 0;
     let totalCommissionPending = 0;
@@ -602,51 +535,35 @@ exports.getVendorFinancials = async (vendorId, { page = 1, limit = 12 } = {}) =>
         parseFloat((grossAmount - commissionAmount).toFixed(2));
       const payoutStatus = order.payoutStatus || "not_applicable";
       const escrowStatus = order.escrowStatus || "not_applicable";
-      const isCod =
-        String(order.paymentMethod || "cod").toLowerCase() === "cod";
+      const paymentMethod = order.paymentMethod || "COD";
+      const isCod = String(paymentMethod).toLowerCase() === "cod";
 
       totalGrossRevenue += grossAmount;
       netExpected += netEarnings;
 
-      // Check commission status
       const commissionStatus = order.commissionStatus || "pending";
-      const paymentMethod = order.paymentMethod || "COD";
 
       if (commissionStatus === "paid" || commissionStatus === "waived") {
         totalCommissionPaid += commissionAmount;
         totalNetEarnings += netEarnings;
-
-        if (paymentMethod !== "COD") {
+        if (paymentMethod !== "COD")
           digitalPaymentCommission += commissionAmount;
-        }
       } else {
-        // For COD pending collection
         totalCommissionPending += commissionAmount;
         totalNetEarnings += netEarnings;
-
-        if (paymentMethod === "COD") {
-          codPendingCommission += commissionAmount;
-        }
+        if (paymentMethod === "COD") codPendingCommission += commissionAmount;
       }
 
       if (!isCod) {
-        if (payoutStatus === "released" || escrowStatus === "released") {
+        if (payoutStatus === "released" || escrowStatus === "released")
           netReleased += netEarnings;
-        } else {
-          pendingAdminRelease += netEarnings;
-        }
+        else pendingAdminRelease += netEarnings;
       } else {
-        if (commissionStatus === "pending") {
-          // vendor still holds full cash but owes commission
-        } else {
-          netReleased += netEarnings;
-        }
+        if (commissionStatus !== "pending") netReleased += netEarnings;
       }
     }
 
-    // Get monthly breakdown for current year
     const currentYear = new Date().getFullYear();
-    const monthlyBreakdown = {};
     const months = [
       "January",
       "February",
@@ -662,6 +579,7 @@ exports.getVendorFinancials = async (vendorId, { page = 1, limit = 12 } = {}) =>
       "December",
     ];
 
+    const monthlyBreakdown = {};
     months.forEach((month) => {
       monthlyBreakdown[month] = {
         grossRevenue: 0,
@@ -674,35 +592,33 @@ exports.getVendorFinancials = async (vendorId, { page = 1, limit = 12 } = {}) =>
 
     orders.forEach((order) => {
       const orderDate = new Date(order.createdAt);
-      if (orderDate.getFullYear() === currentYear) {
-        const monthName = months[orderDate.getMonth()];
-        const grossAmount = order.subTotal || 0;
-        const orderCommissionRate =
-          order.commissionRate ?? effectiveCommissionRate;
-        const commissionAmount =
-          order.commissionAmount ||
-          parseFloat((grossAmount * orderCommissionRate).toFixed(2));
-        const commissionStatus = order.commissionStatus || "pending";
+      if (orderDate.getFullYear() !== currentYear) return;
 
-        monthlyBreakdown[monthName].grossRevenue += grossAmount;
-        monthlyBreakdown[monthName].orderCount += 1;
+      const monthName = months[orderDate.getMonth()];
+      const grossAmount = order.subTotal || 0;
+      const orderCommissionRate =
+        order.commissionRate ?? effectiveCommissionRate;
+      const commissionAmount =
+        order.commissionAmount ||
+        parseFloat((grossAmount * orderCommissionRate).toFixed(2));
+      const commissionStatus = order.commissionStatus || "pending";
 
-        if (commissionStatus === "paid" || commissionStatus === "waived") {
-          monthlyBreakdown[monthName].commissionPaid += commissionAmount;
-          monthlyBreakdown[monthName].netEarnings +=
-            grossAmount - commissionAmount;
-        } else {
-          monthlyBreakdown[monthName].commissionPending += commissionAmount;
-          monthlyBreakdown[monthName].netEarnings +=
-            grossAmount - commissionAmount;
-        }
+      monthlyBreakdown[monthName].grossRevenue += grossAmount;
+      monthlyBreakdown[monthName].orderCount += 1;
+
+      if (commissionStatus === "paid" || commissionStatus === "waived") {
+        monthlyBreakdown[monthName].commissionPaid += commissionAmount;
+        monthlyBreakdown[monthName].netEarnings +=
+          grossAmount - commissionAmount;
+      } else {
+        monthlyBreakdown[monthName].commissionPending += commissionAmount;
+        monthlyBreakdown[monthName].netEarnings +=
+          grossAmount - commissionAmount;
       }
     });
 
-    // Paginated recent orders - perform a separate query with skip/limit
     const totalRecentOrders = await Order.countDocuments(baseFilter);
     const pageNum = Math.max(1, Number(page) || 1);
-    // Enforce a maximum page limit of 12 per requirements
     const pageLimit = Math.max(1, Math.min(12, Number(limit) || 12));
 
     const recentOrdersQuery = await Order.find(baseFilter)
@@ -711,9 +627,10 @@ exports.getVendorFinancials = async (vendorId, { page = 1, limit = 12 } = {}) =>
       .limit(pageLimit)
       .lean();
 
-    const orderHistoryPage = recentOrdersQuery.map((order) => {
+    const recentOrders = recentOrdersQuery.map((order) => {
       const grossAmount = order.subTotal || 0;
-      const orderCommissionRate = order.commissionRate ?? effectiveCommissionRate;
+      const orderCommissionRate =
+        order.commissionRate ?? effectiveCommissionRate;
       const commissionAmount =
         order.commissionAmount ||
         parseFloat((grossAmount * orderCommissionRate).toFixed(2));
@@ -729,10 +646,10 @@ exports.getVendorFinancials = async (vendorId, { page = 1, limit = 12 } = {}) =>
         status: order.status,
         paymentMethod: order.paymentMethod || "COD",
         paymentStatus: order.paymentStatus || "pending",
-        grossAmount: grossAmount,
-        commissionAmount: commissionAmount,
+        grossAmount,
+        commissionAmount,
         commissionStatus: order.commissionStatus || "pending",
-        netEarnings: netEarnings,
+        netEarnings,
         payoutStatus: order.payoutStatus || "not_applicable",
         buyerName: order.shippingAddress?.fullName || "N/A",
       };
@@ -757,7 +674,7 @@ exports.getVendorFinancials = async (vendorId, { page = 1, limit = 12 } = {}) =>
       },
       monthlyBreakdown,
       recentOrders: {
-        data: orderHistoryPage,
+        data: recentOrders,
         page: pageNum,
         limit: pageLimit,
         total: totalRecentOrders,
@@ -769,21 +686,11 @@ exports.getVendorFinancials = async (vendorId, { page = 1, limit = 12 } = {}) =>
   }
 };
 
-/**
- * Get vendor pending COD commission details
- * Shows orders where vendor needs to remit commission
- * @param {String} vendorId - The vendor's user ID
- * @returns {Object} List of pending COD commissions
- */
 exports.getVendorPendingCODCommissions = async (vendorId) => {
   try {
-    // Convert vendorId to string for consistent comparison
     const vendorIdStr = vendorId.toString();
-
-    // Import commission service
     const commissionService = require("../commissions/commission.service");
 
-    // Get pending commissions from commission collection
     const result = await commissionService.getPendingCommissions(vendorIdStr, {
       page: 1,
       limit: 100,
@@ -799,7 +706,6 @@ exports.getVendorPendingCODCommissions = async (vendorId) => {
       };
     }
 
-    // Transform commissions to order format for backward compatibility
     const orders = result.commissions.map((commission) => ({
       commissionId: commission._id,
       orderId: commission.order._id,
@@ -822,7 +728,7 @@ exports.getVendorPendingCODCommissions = async (vendorId) => {
       success: true,
       totalPendingCommission: parseFloat(totalPending.toFixed(2)),
       pendingOrdersCount: orders.length,
-      orders: orders,
+      orders,
     };
   } catch (error) {
     console.error("Get Vendor Pending COD Commissions Error:", error);

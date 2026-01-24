@@ -21,16 +21,15 @@ const shopsRoutes = require("./shops.routes");
 const commissionRoutes = require("../modules/commissions/commission.routes");
 const notificationRoutes = require("../modules/notifications/notification.routes");
 const walletRoutes = require("../modules/wallet/wallet.routes");
+const subscriptionRoutes = require("../modules/subscription/subscription.route.js");
 
-// Import Banner model for public banner endpoint
 const Banner = require("../modules/admin/models/banner.model");
 const Category = require("../modules/admin/models/category.model");
 
-const publicRoutes = require('./public.routes');
+const publicRoutes = require("./public.routes");
 
-
-router.use('/public', publicRoutes);
-router.use("/products", promotionRoutes); // Mount promotion routes FIRST to avoid conflicts
+router.use("/public", publicRoutes);
+router.use("/products", promotionRoutes);
 router.use("/products", productRoutes);
 router.use("/cart", protect, cartRoutes);
 router.use("/order", orderRoutes);
@@ -49,5 +48,11 @@ router.use("/api/shops", shopsRoutes);
 router.use("/commissions", commissionRoutes);
 router.use("/notifications", notificationRoutes);
 router.use("/wallet", walletRoutes);
+router.use(
+  "/sellers/subscription",
+  protect,
+  restrictTo("vendor"),
+  subscriptionRoutes,
+);
 
 module.exports = router;
