@@ -1,5 +1,6 @@
 const {
   getPaginatedProducts,
+  getFeaturedSubscribedProducts,
   createProductService,
   getProducttruesByCategoryService,
   addProductStock,
@@ -41,6 +42,16 @@ module.exports = {
 
       const products = await getPaginatedProducts(skip);
 
+      res.json(products);
+    } catch (error) {
+      next(error);
+    }
+  },
+
+  // GET /products/featured-subscribed
+  async getFeaturedSubscribedProductsController(req, res, next) {
+    try {
+      const products = await getFeaturedSubscribedProducts();
       res.json(products);
     } catch (error) {
       next(error);

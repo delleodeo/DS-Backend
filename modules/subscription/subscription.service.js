@@ -258,4 +258,43 @@ exports.subscriptionService = {
       { $set: { status: "canceled", canceledAt: now } },
     );
   },
+
+  // Admin methods
+  async getAllSubscriptions() {
+    return Subscription.find({}).populate("planId sellerId", "name email");
+  },
+
+  async getSubscriptionById(id) {
+    ensureValidObjectId(id, "id");
+    return Subscription.findById(id).populate("planId sellerId", "name email");
+  },
+
+  async updateSubscription(id, updates) {
+    ensureValidObjectId(id, "id");
+    return Subscription.findByIdAndUpdate(id, updates, { new: true }).populate("planId sellerId", "name email");
+  },
+
+  async deleteSubscription(id) {
+    ensureValidObjectId(id, "id");
+    return Subscription.findByIdAndDelete(id);
+  },
+
+  async getAllPlans() {
+    return Plan.find({});
+  },
+
+  async createPlan(planData) {
+    const plan = new Plan(planData);
+    return plan.save();
+  },
+
+  async updatePlan(id, updates) {
+    ensureValidObjectId(id, "id");
+    return Plan.findByIdAndUpdate(id, updates, { new: true });
+  },
+
+  async deletePlan(id) {
+    ensureValidObjectId(id, "id");
+    return Plan.findByIdAndDelete(id);
+  },
 };

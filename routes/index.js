@@ -22,6 +22,7 @@ const commissionRoutes = require("../modules/commissions/commission.routes");
 const notificationRoutes = require("../modules/notifications/notification.routes");
 const walletRoutes = require("../modules/wallet/wallet.routes");
 const subscriptionRoutes = require("../modules/subscription/subscription.route.js");
+const vendorAnalyticsProRoutes = require("../modules/vendors/subcriptors/subscriptor.route.js");
 
 const Banner = require("../modules/admin/models/banner.model");
 const Category = require("../modules/admin/models/category.model");
@@ -53,6 +54,12 @@ router.use(
   protect,
   restrictTo("vendor"),
   subscriptionRoutes,
+);
+router.use(
+  "/plan/vendor/analytics",
+  protect,
+  restrictTo("vendor"),
+  vendorAnalyticsProRoutes,
 );
 
 module.exports = router;

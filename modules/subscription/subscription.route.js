@@ -16,4 +16,7 @@ router.post("/renew", asyncHandler(subscriptionController.renew));
 
 router.post("/cancel", asyncHandler(subscriptionController.cancelAtPeriodEnd));
 
+// Public route for plans (no auth required)
+router.get("/plans", asyncHandler(subscriptionController.getAllPlans));
+
 module.exports = router;

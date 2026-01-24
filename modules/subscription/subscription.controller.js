@@ -58,4 +58,53 @@ exports.subscriptionController = {
     const result = await subscriptionService.cancelAtPeriodEnd({ sellerId });
     res.json(result);
   },
+
+  // Admin methods
+  async getAllSubscriptions(req, res) {
+    const subscriptions = await subscriptionService.getAllSubscriptions();
+    res.json({ subscriptions });
+  },
+
+  async getSubscriptionById(req, res) {
+    const { id } = req.params;
+    const subscription = await subscriptionService.getSubscriptionById(id);
+    res.json({ subscription });
+  },
+
+  async updateSubscription(req, res) {
+    const { id } = req.params;
+    const updates = req.body;
+    const subscription = await subscriptionService.updateSubscription(id, updates);
+    res.json({ subscription });
+  },
+
+  async deleteSubscription(req, res) {
+    const { id } = req.params;
+    await subscriptionService.deleteSubscription(id);
+    res.json({ success: true, message: "Subscription deleted" });
+  },
+
+  async getAllPlans(req, res) {
+    const plans = await subscriptionService.getAllPlans();
+    res.json({ plans });
+  },
+
+  async createPlan(req, res) {
+    const planData = req.body;
+    const plan = await subscriptionService.createPlan(planData);
+    res.json({ plan });
+  },
+
+  async updatePlan(req, res) {
+    const { id } = req.params;
+    const updates = req.body;
+    const plan = await subscriptionService.updatePlan(id, updates);
+    res.json({ plan });
+  },
+
+  async deletePlan(req, res) {
+    const { id } = req.params;
+    await subscriptionService.deletePlan(id);
+    res.json({ success: true, message: "Plan deleted" });
+  },
 };

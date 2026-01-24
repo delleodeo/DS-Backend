@@ -52,5 +52,9 @@ SubscriptionSchema.index({ sellerId: 1, status: 1 });
 SubscriptionSchema.index({ planId: 1, status: 1 });
 SubscriptionSchema.index({ status: 1, currentPeriodEnd: 1 });
 SubscriptionSchema.index({ cancelAtPeriodEnd: 1, currentPeriodEnd: 1 });
+// Subscription schema
+SubscriptionSchema.index({ sellerId: 1 });
+SubscriptionSchema.index({ sellerId: 1, status: 1, currentPeriodEnd: 1 });
+
 
 export const Subscription = mongoose.model("subscriptions", SubscriptionSchema);

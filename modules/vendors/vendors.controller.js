@@ -29,6 +29,18 @@ exports.getFeaturedVendor = async (req, res) => {
   }
 };
 
+exports.getFeaturedSubscribedVendors = async (req, res) => {
+  try {
+    const vendors = await vendorService.getFeaturedSubscribedVendors();
+    res.status(200).json(vendors);
+  } catch (err) {
+    console.error("Get Featured Subscribed Vendors Error:", err);
+    res
+      .status(500)
+      .json({ error: err.message || "Failed to fetch featured subscribed vendors" });
+  }
+};
+
 exports.getVendor = async (req, res) => {
   try {
     const vendor = await vendorService.getVendorById(req.user.id);

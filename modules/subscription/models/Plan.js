@@ -24,7 +24,7 @@ const PlanSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
-
+PlanSchema.index({ _id: 1 });
 PlanSchema.index({ code: 1 }, { unique: true });
 PlanSchema.index({ isActive: 1, sortOrder: 1 });
 PlanSchema.index({ interval: 1, isActive: 1 });

@@ -13,6 +13,7 @@ router.post(
 router.post("/follow/:vendorId", protect, vendorController.followVendor);
 router.get("/", protect, vendorController.getVendor);
 router.get("/featured", vendorController.getFeaturedVendor);
+router.get("/featured-subscribed", vendorController.getFeaturedSubscribedVendors);
 router.put(
 	"/",
 	protect,

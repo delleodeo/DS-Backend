@@ -178,11 +178,36 @@ OrderSchema.pre("save", function (next) {
   next();
 });
 
-// Indexes for commission queries
-OrderSchema.index({ commissionStatus: 1, status: 1 });
-OrderSchema.index({ vendorId: 1, commissionStatus: "delivered" });
-OrderSchema.index({ vendorId: 1, commissionStatus: 1 });
-OrderSchema.index({ paymentMethod: 1, commissionStatus: 1 });
-OrderSchema.index({ customerId: 1, status: 1 });
+
+
+OrderSchema.index({ vendorId: 1, status: 1, createdAt: -1 });
+OrderSchema.index({ customerId: 1, status: 1, createdAt: -1 });
+OrderSchema.index({ vendorId: 1, customerId: 1, createdAt: -1 });
+
+OrderSchema.index(
+  { vendorId: 1, "items.productId": 1, createdAt: -1 },
+  { partialFilterExpression: { status: "delivered" } }
+);
+
+OrderSchema.index(
+  { vendorId: 1, customerId: 1, createdAt: -1 },
+  { partialFilterExpression: { status: "delivered" } }
+);
+
+OrderSchema.index(
+  { vendorId: 1, "shippingAddress.city": 1, createdAt: -1 },
+  { partialFilterExpression: { status: "delivered" } }
+);
+
+OrderSchema.index({ status: 1, createdAt: -1 });
+OrderSchema.index({ refundStatus: 1, status: 1, createdAt: -1 });
+OrderSchema.index({ payoutStatus: 1, status: 1, createdAt: -1 });
+OrderSchema.index({ escrowStatus: 1, status: 1, createdAt: -1 });
+
+OrderSchema.index({ paymentMethod: 1, status: 1, createdAt: -1 });
+
+OrderSchema.index({ commissionStatus: 1, status: 1, createdAt: -1 });
+OrderSchema.index({ vendorId: 1, commissionStatus: 1, createdAt: -1 });
+
 
 module.exports = mongoose.model("Order", OrderSchema);

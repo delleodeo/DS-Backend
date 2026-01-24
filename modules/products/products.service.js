@@ -13,6 +13,7 @@ try {
 }
 const Product = require("./products.model.js");
 const Vendor = require("../vendors/vendors.model.js");
+const { Subscription } = require("../subscription/models/Subscription");
 // validateOptionPayload re-exported from productUtils to allow easy mocking in tests
 const { validateOptionPayload } = require("./product-utils/productUtils.js");
 const {
@@ -98,6 +99,63 @@ async function getPaginatedProducts(skip = 1, limit) {
     return paginatedProducts;
   } catch (error) {
     throw createError(error);
+  }
+}
+
+// Get random products from subscribed sellers (max 3 per seller)
+async function getFeaturedSubscribedProducts() {
+  const cacheKey = 'products:featured:subscribed';
+
+  try {
+    // Check cache first
+    let cachedProducts = await cache.get(cacheKey);
+    if (cachedProducts) return cachedProducts;
+
+    // Get active subscribed seller IDs
+    const activeSubscriptions = await Subscription.find({ status: 'active' }, { sellerId: 1 });
+    const sellerIds = activeSubscriptions.map(sub => sub.sellerId);
+
+    if (sellerIds.length === 0) {
+      // Fallback to regular products if no subscribed sellers
+      return await getPaginatedProducts(0, 20);
+    }
+
+    // Fetch all products from subscribed sellers
+    const allProducts = await Product.find({
+      vendorId: { $in: sellerIds },
+      status: PRODUCT_STATUS.APPROVED,
+      isDisabled: { $ne: true },
+      stock: { $gt: 0 },
+    });
+
+    // Group by vendorId
+    const grouped = allProducts.reduce((acc, product) => {
+      if (!acc[product.vendorId]) acc[product.vendorId] = [];
+      acc[product.vendorId].push(product);
+      return acc;
+    }, {});
+
+    // For each seller, shuffle and take up to 3
+    const products = [];
+    for (const vendorProducts of Object.values(grouped)) {
+      // Fisher-Yates shuffle
+      for (let i = vendorProducts.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [vendorProducts[i], vendorProducts[j]] = [vendorProducts[j], vendorProducts[i]];
+      }
+      products.push(...vendorProducts.slice(0, 3));
+    }
+
+    // Cache for 5 minutes to allow randomization on refresh
+    if (cache.isAvailable()) {
+      await cache.set(cacheKey, products, 300);
+    }
+
+    return products;
+  } catch (error) {
+    logger.error('Error fetching featured subscribed products:', error);
+    // Fallback to regular products
+    return await getPaginatedProducts(0, 20);
   }
 }
 
@@ -1070,6 +1128,7 @@ async function addSingleOption(productId, optionData) {
 module.exports = {
   addSingleOption,
   getPaginatedProducts,
+  getFeaturedSubscribedProducts,
   createProductService,
   getProductsByCategoryService,
   searchProductsService,

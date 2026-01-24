@@ -107,6 +107,49 @@ exports.getFeaturedVendor = async () => {
   }
 };
 
+exports.getFeaturedSubscribedVendors = async () => {
+  try {
+    const cacheKey = "vendor:featured:subscribed";
+    if (isRedisAvailable()) {
+      const cached = await redisClient.get(cacheKey);
+      if (cached) return JSON.parse(cached);
+    }
+
+    // Get active subscribed seller IDs
+    const { Subscription } = require("../subscription/models/Subscription");
+    const activeSubscriptions = await Subscription.find({ status: 'active' }, { sellerId: 1 });
+    const sellerIds = activeSubscriptions.map(sub => sub.sellerId);
+
+    if (sellerIds.length === 0) {
+      // Fallback to regular featured vendors
+      return await exports.getFeaturedVendor();
+    }
+
+    // Get vendor details for subscribed sellers
+    const subscribedVendors = await Vendor.find({ userId: { $in: sellerIds } })
+      .select("storeName userId imageUrl")
+      .lean();
+
+    const filteredData = subscribedVendors.map((data) => ({
+      storeName: data.storeName,
+      userId: data.userId,
+      imageUrl: data.imageUrl,
+    }));
+
+    if (filteredData.length > 0 && isRedisAvailable()) {
+      await redisClient.set(cacheKey, JSON.stringify(filteredData), {
+        EX: 300, // 5 minutes
+      });
+    }
+
+    return filteredData;
+  } catch (error) {
+    console.error("Get Featured Subscribed Vendors Error:", error);
+    // Fallback to regular featured vendors
+    return await exports.getFeaturedVendor();
+  }
+};
+
 exports.getVendorDetails = async (vendorId, userId) => {
   try {
     if (isRedisAvailable()) {

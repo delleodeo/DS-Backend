@@ -22,7 +22,7 @@ class HttpError extends Error {
     super(message);
     this.status = status;
     this.details = details;
-  }yy
+  }
 }
 
 module.exports = {

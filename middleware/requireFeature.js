@@ -1,26 +1,44 @@
-import { Subscription } from "../models/Subscription.js";
-import { Plan } from "../models/Plan.js";
+const { Subscription } = require("../modules/subscription/models/Subscription");
+const { getRedisClient, isRedisAvailable } = require("../config/redis");
+const redis = getRedisClient();
 
-export function requireFeature(featureKey) {
+exports.requireFeature = function () {
   return async (req, res, next) => {
     try {
-      const sellerId = req.user?.sellerId;
+      const sellerId = req.user?.vendorId || req.user?.id || req.user?._id;
       if (!sellerId) return res.status(403).json({ error: "Seller account required" });
 
-      const sub = await Subscription.findOne({ sellerId });
-      if (!sub) return res.status(403).json({ error: "No subscription" });
-      if (sub.status !== "active") return res.status(403).json({ error: "Subscription not active" });
-      if (sub.currentPeriodEnd <= new Date()) return res.status(403).json({ error: "Subscription expired" });
+      const cacheKey = `subcheck:${String(sellerId)}`;
 
-      const plan = await Plan.findById(sub.planId);
-      if (!plan || !plan.isActive) return res.status(403).json({ error: "Plan not available" });
+      if (isRedisAvailable()) {
+        const cached = await redis.get(cacheKey);
+        if (cached) {
+          const ok = cached === "1";
+          if (!ok) return res.status(403).json({ error: "Subscription required", isSubscriptionActive: false });
+          return next();
+        }
+      }
 
-      const allowed = plan.limits?.[featureKey];
-      if (!allowed) return res.status(403).json({ error: "Feature not included in your plan" });
+      const sub = await Subscription.findOne({ sellerId })
+        .select("status currentPeriodEnd planId")
+        .populate({ path: "planId", select: "isActive" })
+        .lean();
 
+      const ok =
+        !!sub &&
+        sub.status === "active" &&
+        (!sub.currentPeriodEnd || sub.currentPeriodEnd > new Date()) &&
+        !!sub.planId &&
+        sub.planId.isActive === true;
+
+      if (isRedisAvailable()) {
+        await redis.set(cacheKey, ok ? "1" : "0", { EX: 60 }); // 60s cache
+      }
+
+      if (!ok) return res.status(403).json({ error: "Subscription required", isSubscriptionActive: false });
       next();
     } catch (e) {
       next(e);
     }
   };
-}
+};

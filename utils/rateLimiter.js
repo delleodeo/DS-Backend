@@ -14,7 +14,7 @@ const rateLimiter = ({ windowSec = 60, maxRequests = 10, keyPrefix = "rl" }) => 
 
 
     try {
-      const identifier = req.user?.id || req.ip; // per-user if logged in, else per-IP
+      const identifier = req.user?.id || req.user?.vendorId || req.ip ; // per-user if logged in, else per-IP
       const key = `${keyPrefix}:${identifier}`;
       const now = Date.now();
       const windowStart = now - windowSec * 1000;

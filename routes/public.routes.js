@@ -5,6 +5,7 @@ const router = express.Router();
 const Banner = require('../modules/admin/models/banner.model');
 const Category = require('../modules/admin/models/category.model');
 const productMetaService = require('../modules/products/productMeta.service');
+const { Plan } = require('../modules/subscription/models/Plan.js');
 
 // Public endpoint to get active banners for homepage
 router.get('/public/banners', async (req, res) => {
@@ -87,6 +88,19 @@ router.get('/stats', async (req, res) => {
     });
   } catch (error) {
     console.error('Get Public Stats Error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Public endpoint to get active subscription plans
+router.get('/plans', async (req, res) => {
+  try {
+    const plans = await Plan.find({ isActive: true })
+      .select('code name description price currency interval features limits')
+      .sort({ price: 1 });
+    res.json({ success: true, data: plans });
+  } catch (error) {
+    console.error('Get Public Plans Error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });

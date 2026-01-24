@@ -102,6 +102,12 @@ router.get(
 );
 
 router.get(
+  "/featured-subscribed",
+  rateLimiter({ windowSec: 60, maxRequests: 100, keyPrefix: "featured-subscribed" }),
+  productController.getFeaturedSubscribedProductsController
+);
+
+router.get(
   "/category/:category",
   rateLimiter({ windowSec: 60, maxRequests: 100, keyPrefix: "get-category" }),
   productController.getByCategoryController
