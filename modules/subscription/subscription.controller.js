@@ -11,7 +11,7 @@ const getIdempotencyKey = (req) => {
 
 const requireSellerAccount = (req) => {
   const sellerId = req.user?.id || req.user?._id;
-  console.log("Seller ID:", sellerId);
+  console.log("Seller IDdsssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss:", sellerId);
   if (!sellerId) throw new HttpError(403, "Seller account required");
   return sellerId;
 };
@@ -25,7 +25,7 @@ exports.subscriptionController = {
 
   async startOrChangePlan(req, res) {
     const sellerId = requireSellerAccount(req);
-    const { planCode } = req.body;
+    const { planCode, paymentMethod = 'wallet', paymentIntentId } = req.body;
 
     if (!planCode) {
       throw new HttpError(400, "planCode is required");
@@ -36,6 +36,8 @@ exports.subscriptionController = {
       planCode: planCode,
       actorUserId: sellerId,
       idempotencyKey: getIdempotencyKey(req),
+      paymentMethod,
+      paymentIntentId,
     });
 
     res.json(result);

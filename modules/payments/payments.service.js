@@ -373,6 +373,112 @@ class PaymentService {
     }
   }
 
+  async createSubscriptionQRPHPayment(userId, sellerId, planCode, amount, description = '', metadata = {}) {
+    try {
+      const sanitizedAmount = sanitizeMongoInput(amount);
+      const sanitizedDescription = sanitizeMongoInput(description || `Subscription ${planCode}`);
+
+      if (sanitizedAmount === undefined || sanitizedAmount === null || sanitizedAmount <= 0) {
+        throw new ValidationError('Amount must be greater than 0 (in centavos)');
+      }
+
+      const idempotencyKey = crypto.randomBytes(16).toString('hex');
+
+      const rawMetadata = {
+        ...metadata,
+        userId: userId.toString(),
+        sellerId: sellerId.toString(),
+        planCode: planCode,
+        paymentMethod: 'qrph',
+        orderType: 'subscription',
+      };
+
+      const flattenedMetadata = flattenMetadataForPayMongo(rawMetadata);
+
+      const paymentIntent = await paymongoClient.createPaymentIntent(
+        sanitizedAmount,
+        sanitizedDescription,
+        flattenedMetadata,
+      );
+
+      const paymentMethod = await paymongoClient.createPaymentMethod('qrph', {});
+
+      const attachedIntent = await paymongoClient.attachPaymentMethod(
+        paymentIntent.data.id,
+        paymentMethod.data.id,
+        process.env.PAYMENT_RETURN_URL || 'http://localhost:5173/sellers/subscription',
+      );
+
+      let qrCodeUrl = null;
+      if (
+        attachedIntent.data.attributes.next_action &&
+        attachedIntent.data.attributes.next_action.code &&
+        attachedIntent.data.attributes.next_action.code.image_url
+      ) {
+        qrCodeUrl = attachedIntent.data.attributes.next_action.code.image_url;
+      }
+
+      const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+
+      const payment = new Payment({
+        userId,
+        type: 'subscription',
+        provider: 'paymongo',
+        amount: sanitizedAmount,
+        fee: Math.round(sanitizedAmount * 0.025),
+        netAmount: sanitizedAmount - Math.round(sanitizedAmount * 0.025),
+        currency: 'PHP',
+        description: sanitizedDescription,
+        status: 'awaiting_payment',
+        paymentIntentId: paymentIntent.data.id,
+        idempotencyKey,
+        gatewayResponse: paymentIntent,
+        metadata: new Map(Object.entries({ ...rawMetadata })),
+        expiresAt,
+      });
+
+      await payment.save();
+
+      logger.info('Subscription QRPH payment created:', { paymentId: payment._id, paymentIntentId: paymentIntent.data.id, amount: sanitizedAmount });
+
+      return {
+        payment,
+        clientKey: paymentIntent.data.attributes.client_key,
+        paymentIntentId: paymentIntent.data.id,
+        qrCodeUrl,
+      };
+    } catch (error) {
+      logger.error('Error creating subscription QRPH payment:', error);
+      throw error;
+    }
+  }
+
+  generateQRCodeUrl(paymentIntentId, clientKey) {
+    const paymentUrl = `https://pm.link/${paymentIntentId}`;
+    const encodedUrl = encodeURIComponent(paymentUrl);
+    return `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodedUrl}`;
+  }
+
+  async attachPaymentMethod(
+    userId,
+    paymentIntentId,
+    paymentMethodId,
+    returnUrl,
+  ) {
+    try {
+      const payment = await Payment.findOne({ paymentIntentId });
+      if (!payment) throw new NotFoundError("Payment");
+
+      if (payment.userId.toString() !== userId.toString()) {
+        throw new ValidationError("Payment does not belong to this user");
+      }
+
+    } catch (error) {
+      logger.error("Error creating QRPH payment:", error);
+      throw error;
+    }
+  }
+
   generateQRCodeUrl(paymentIntentId, clientKey) {
     const paymentUrl = `https://pm.link/${paymentIntentId}`;
     const encodedUrl = encodeURIComponent(paymentUrl);

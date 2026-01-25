@@ -38,7 +38,7 @@ const PaymentSchema = new mongoose.Schema(
 
     type: {
       type: String,
-      enum: ["checkout", "refund", "withdraw", "cash_in"],
+      enum: ["checkout", "refund", "withdraw", "cash_in", "subscription"],
       required: true,
       index: true,
     },

@@ -15,6 +15,13 @@ router.post(
   paymentController.createCheckoutPayment
 );
 
+// Create subscription payment (QRPH)
+router.post(
+  "/subscription",
+  restrictTo("vendor"),
+  paymentController.createSubscriptionPayment
+);
+
 router.post(
   "/attach-method",
   restrictTo("user", "vendor", "rider", "admin"),

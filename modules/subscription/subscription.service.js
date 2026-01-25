@@ -6,6 +6,10 @@ const {
   computePeriodEnd,
 } = require("./utils/subscriptionErrors.js");
 const { withIdempotency } = require("./idempotency.service.js");
+const paymentService = require("../payments/payments.service.js");
+const Payment = require("../payments/payments.model.js");
+const walletService = require("../wallet/wallet.service.js");
+const Vendor = require("../vendors/vendors.model.js");
 
 const ensureValidObjectId = (value, fieldName) => {
   if (!mongoose.Types.ObjectId.isValid(String(value)))
@@ -18,6 +22,12 @@ const normalizePlanCode = (rawPlanCode) => {
     .toLowerCase();
   if (!normalized) throw new HttpError(400, "planCode is required");
   return normalized;
+};
+
+const getUserIdFromSellerId = async (sellerId) => {
+  const vendor = await Vendor.findOne({ userId: sellerId });
+  if (!vendor) throw new HttpError(404, "Seller not found");
+  return vendor.userId;
 };
 
 const findActivePlanByCode = async (planCode) => {
@@ -107,11 +117,72 @@ const idempotencyRoutes = {
   renew: "POST http://localhost:3001/v1/sellers/subscription/renew",
 };
 
-const buildStartOrChangeHandler = ({ sellerId, normalizedPlanCode }) => {
+const buildStartOrChangeHandler = ({ sellerId, normalizedPlanCode, paymentMethod, paymentIntentId }) => {
   return () =>
     runInTransaction(async (session) => {
       const plan = await findActivePlanByCode(normalizedPlanCode);
       const now = new Date();
+
+      // Get userId for payment
+      const userId = await getUserIdFromSellerId(sellerId);
+
+      // Handle payment if plan has price
+      if (plan.price > 0) {
+        if (paymentMethod === 'wallet') {
+          // Check balance
+          const balance = await walletService.getBalance(userId);
+          if (balance < plan.price) {
+            throw new HttpError(400, `Insufficient wallet balance. Required: ${plan.price}, Available: ${balance}`);
+          }
+          // Deduct from wallet
+          await walletService.debitWallet(userId, plan.price, {
+            description: `Subscription payment for ${plan.name}`,
+            referenceType: 'subscription',
+            referenceId: sellerId,
+            session
+          });
+        } else if (paymentMethod === 'qrph') {
+          // Validate payment intent and ensure it was completed for this seller/plan
+          if (!paymentIntentId) {
+            throw new HttpError(400, 'paymentIntentId is required for QRPH payment confirmation');
+          }
+
+          const payment = await paymentService.checkPaymentStatus(paymentIntentId);
+
+          if (payment.status !== 'succeeded') {
+            throw new HttpError(400, 'Payment has not completed');
+          }
+
+          // Verify metadata
+          const meta = payment.metadata || {};
+          const metaSeller = String(meta.get ? meta.get('sellerId') : meta.sellerId);
+          const metaPlan = String(meta.get ? meta.get('planCode') : meta.planCode);
+
+          if (metaSeller !== String(sellerId)) {
+            throw new HttpError(400, 'Payment metadata seller mismatch');
+          }
+
+          if (metaPlan !== String(normalizedPlanCode)) {
+            throw new HttpError(400, 'Payment metadata plan mismatch');
+          }
+
+          // Verify amount matches plan price (in centavos)
+          const expectedAmount = Math.round(plan.price * 100);
+          if (payment.amount !== expectedAmount) {
+            throw new HttpError(400, 'Payment amount does not match plan price');
+          }
+
+          // Prevent reuse
+          const alreadyUsed = (meta.get && meta.get('subscriptionApplied')) || meta.subscriptionApplied;
+          if (alreadyUsed) {
+            throw new HttpError(400, 'Payment already used for a subscription');
+          }
+
+          // We'll mark payment used after subscription is saved (below)
+        } else {
+          throw new HttpError(400, 'Invalid payment method');
+        }
+      }
 
       const subscription = await Subscription.findOne({ sellerId }).session(
         session,
@@ -130,6 +201,16 @@ const buildStartOrChangeHandler = ({ sellerId, normalizedPlanCode }) => {
           ],
           { session },
         );
+
+        // If QRPH, mark payment as used
+        if (paymentMethod === 'qrph' && paymentIntentId) {
+          await Payment.findOneAndUpdate(
+            { paymentIntentId },
+            { $set: { 'metadata.subscriptionApplied': 'true', 'metadata.subscriptionId': createdSubscription._id.toString() } },
+            { session },
+          );
+        }
+
         return { subscription: createdSubscription };
       }
 
@@ -152,6 +233,16 @@ const buildStartOrChangeHandler = ({ sellerId, normalizedPlanCode }) => {
       if (expired) setSubscriptionCycle(subscription, now, plan.interval);
 
       await subscription.save({ session });
+
+      // If QRPH, mark payment as used and reference the subscription
+      if (paymentMethod === 'qrph' && paymentIntentId) {
+        await Payment.findOneAndUpdate(
+          { paymentIntentId },
+          { $set: { 'metadata.subscriptionApplied': 'true', 'metadata.subscriptionId': subscription._id.toString() } },
+          { session },
+        );
+      }
+
       return { subscription };
     });
 };
@@ -162,7 +253,7 @@ exports.subscriptionService = {
     return Subscription.findOne({ sellerId }).populate("planId");
   },
 
-  startOrChangePlan({ sellerId, planCode, actorUserId, idempotencyKey }) {
+  startOrChangePlan({ sellerId, planCode, actorUserId, idempotencyKey, paymentMethod = 'wallet', paymentIntentId = undefined }) {
     ensureValidObjectId(sellerId, "sellerId");
     const normalizedPlanCode = normalizePlanCode(planCode);
 
@@ -170,8 +261,8 @@ exports.subscriptionService = {
       key: idempotencyKey,
       userId: actorUserId,
       route: idempotencyRoutes.changePlan,
-      body: { sellerId, planCode: normalizedPlanCode },
-      handler: buildStartOrChangeHandler({ sellerId, normalizedPlanCode }),
+      body: { sellerId, planCode: normalizedPlanCode, paymentMethod, paymentIntentId },
+      handler: buildStartOrChangeHandler({ sellerId, normalizedPlanCode, paymentMethod, paymentIntentId }),
     });
   },
 

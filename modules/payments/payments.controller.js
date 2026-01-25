@@ -24,6 +24,8 @@ exports.createCheckoutPayment = asyncHandler(async (req, res) => {
   } = req.body;
   const userId = req.user.id;
 
+
+
   // Check if this is a QRPH payment (pre-order payment)
   if (paymentMethod === "qrph" && !orderId) {
     // Validate checkoutData is provided for QRPH payments
@@ -106,6 +108,39 @@ exports.attachPaymentMethod = asyncHandler(async (req, res) => {
   });
 });
 
+// New: create subscription payment (dedicated endpoint)
+exports.createSubscriptionPayment = asyncHandler(async (req, res) => {
+  const { planCode } = req.body.subscription || {};
+  const { amount } = req.body;
+  const userId = req.user.id;
+
+  if (!planCode) throw new ValidationError('subscription.planCode is required');
+  if (!amount || amount <= 0) throw new ValidationError('amount (in centavos) is required');
+
+  const result = await paymentService.createSubscriptionQRPHPayment(
+    userId,
+    userId,
+    planCode,
+    amount,
+    `Subscription: ${planCode}`,
+    { planCode },
+  );
+
+  res.status(201).json({
+    success: true,
+    message: 'Subscription QRPH payment created successfully',
+    payment: {
+      _id: result.payment._id,
+      paymentIntentId: result.paymentIntentId,
+      status: result.payment.status,
+      amount: result.payment.amount / 100,
+      currency: result.payment.currency,
+      qrCodeUrl: result.qrCodeUrl,
+      expiresAt: result.payment.expiresAt,
+    },
+  });
+});
+
 /**
  * @route   GET /api/payments/status/:paymentIntentId
  * @desc    Check payment status by intent ID
@@ -116,10 +151,20 @@ exports.checkPaymentStatus = asyncHandler(async (req, res) => {
 
   const payment = await paymentService.checkPaymentStatus(paymentIntentId);
 
+  // Prevent caching of status checks to avoid 304 responses during polling
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
+  res.set("Pragma", "no-cache");
+  res.set("Expires", "0");
+
+  // Determine which identifier was used by the caller
+  const identifierUsed = paymentIntentId && paymentIntentId.startsWith("pi_") ? "paymentIntentId" : "paymentId";
+
   res.status(200).json({
     success: true,
     data: {
       paymentId: payment._id,
+      paymentIntentId: payment.paymentIntentId || null,
+      identifierUsed,
       status: payment.status,
       amount: payment.amount,
       currency: payment.currency,
