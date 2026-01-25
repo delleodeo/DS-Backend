@@ -50,8 +50,10 @@ module.exports = {
 
   // GET /products/featured-subscribed
   async getFeaturedSubscribedProductsController(req, res, next) {
+    const municipalities = req.query.municipalities;
+    const categories = req.query.categories;
     try {
-      const products = await getFeaturedSubscribedProducts();
+      const products = await getFeaturedSubscribedProducts(municipalities, categories);
       res.json(products);
     } catch (error) {
       next(error);
@@ -104,7 +106,7 @@ module.exports = {
   // GET /products/category/:category?limit=10&skip=10&fresh=true
   async getByCategoryController(req, res, next) {
     try {
-      const { category } = req.params;
+      const { category } = req.query;
       const limit = parseInt(req.query.limit) || 0;
       const skip = parseInt(req.query.skip) || 0;
 

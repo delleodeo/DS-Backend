@@ -1,44 +1,64 @@
-const { Subscription } = require("../modules/subscription/models/Subscription");
-const { getRedisClient, isRedisAvailable } = require("../config/redis");
-const redis = getRedisClient();
+const mongoose = require("mongoose");
+const {Subscription} = require("../modules/subscription/models/Subscription");
 
-exports.requireFeature = function () {
-  return async (req, res, next) => {
-    try {
-      const sellerId = req.user?.vendorId || req.user?.id || req.user?._id;
-      if (!sellerId) return res.status(403).json({ error: "Seller account required" });
+const normalizeId = (v) => {
+  if (!v) return null;
+  if (typeof v === "string") return v;
+  if (typeof v === "object") return String(v._id || v.id || "");
+  return String(v);
+};
 
-      const cacheKey = `subcheck:${String(sellerId)}`;
+exports.requireFeature = () => async (req, res, next) => {
+  try {
+    const vendorId = normalizeId(req.user?.vendorId || req.user?.vendor?._id);
+    const userId = normalizeId(req.user?.id || req.user?._id);
 
-      if (isRedisAvailable()) {
-        const cached = await redis.get(cacheKey);
-        if (cached) {
-          const ok = cached === "1";
-          if (!ok) return res.status(403).json({ error: "Subscription required", isSubscriptionActive: false });
-          return next();
-        }
-      }
+    const ids = [vendorId, userId]
+      .filter(Boolean)
+      .filter((x) => mongoose.Types.ObjectId.isValid(x))
+      .map((x) => new mongoose.Types.ObjectId(x));
 
-      const sub = await Subscription.findOne({ sellerId })
-        .select("status currentPeriodEnd planId")
-        .populate({ path: "planId", select: "isActive" })
-        .lean();
-
-      const ok =
-        !!sub &&
-        sub.status === "active" &&
-        (!sub.currentPeriodEnd || sub.currentPeriodEnd > new Date()) &&
-        !!sub.planId &&
-        sub.planId.isActive === true;
-
-      if (isRedisAvailable()) {
-        await redis.set(cacheKey, ok ? "1" : "0", { EX: 60 }); // 60s cache
-      }
-
-      if (!ok) return res.status(403).json({ error: "Subscription required", isSubscriptionActive: false });
-      next();
-    } catch (e) {
-      next(e);
+    if (!ids.length) {
+      return res.status(403).json({ error: "Seller account required" });
     }
-  };
+
+    const now = new Date();
+
+    const rows = await Subscription.aggregate([
+      { $match: { sellerId: { $in: ids } } },
+      { $limit: 1 },
+      {
+        $lookup: {
+          from: "plans",
+          localField: "planId",
+          foreignField: "_id",
+          as: "plan",
+          pipeline: [{ $project: { isActive: 1 } }],
+        },
+      },
+      { $addFields: { plan: { $first: "$plan" } } },
+      {
+        $project: {
+          status: 1,
+          currentPeriodEnd: 1,
+          planActive: "$plan.isActive",
+        },
+      },
+    ]);
+
+    const sub = rows[0];
+    const ok =
+      !!sub &&
+      String(sub.status || "").toLowerCase() === "active" &&
+      (!sub.currentPeriodEnd || new Date(sub.currentPeriodEnd) > now) &&
+      sub.planActive === true;
+
+    if (!ok) {
+      return res.status(403).json({ error: "Subscription required", isSubscriptionActive: false });
+    }
+
+    next();
+  } catch (e) {
+    next(e);
+  }
 };

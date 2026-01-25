@@ -96,7 +96,7 @@ router.get('/stats', async (req, res) => {
 router.get('/plans', async (req, res) => {
   try {
     const plans = await Plan.find({ isActive: true })
-      .select('code name description price currency interval features limits')
+      .select('code name description price currency interval features limits discountExpiresAt discountPercent')
       .sort({ price: 1 });
     res.json({ success: true, data: plans });
   } catch (error) {

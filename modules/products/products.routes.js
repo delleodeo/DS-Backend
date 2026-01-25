@@ -108,7 +108,7 @@ router.get(
 );
 
 router.get(
-  "/category/:category",
+  "/category",
   rateLimiter({ windowSec: 60, maxRequests: 100, keyPrefix: "get-category" }),
   productController.getByCategoryController
 );

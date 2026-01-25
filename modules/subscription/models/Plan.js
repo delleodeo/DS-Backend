@@ -8,9 +8,13 @@ const PlanSchema = new mongoose.Schema(
 
     price: { type: Number, required: true, min: 0 },
     currency: { type: String, default: "PHP" },
-    interval: { type: String, enum: ["monthly", "quarterly"], required: true },
+    interval: { type: String, enum: ["monthly", "3 months"], required: true },
 
     features: { type: [String], default: [] },
+
+    // Optional discount configuration managed by admin
+    discountPercent: { type: Number, default: 0, min: 0, max: 100 },
+    discountExpiresAt: { type: Date, default: null },
 
     limits: {
       products: { type: Number, default: 0 },

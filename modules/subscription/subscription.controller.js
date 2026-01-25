@@ -75,7 +75,20 @@ exports.subscriptionController = {
 
   async updateSubscription(req, res) {
     const { id } = req.params;
-    const updates = req.body;
+    const updates = { ...req.body };
+
+    // Allow admin to pass planCode (convenience) — resolve to planId
+    if (updates.planCode) {
+      const normalized = (updates.planCode || '').trim().toLowerCase();
+      if (!normalized) throw new HttpError(400, 'planCode cannot be empty');
+      // look up plan directly using Plan model
+      const Plan = require('./models/Plan.js').Plan;
+      const planDoc = await Plan.findOne({ code: normalized, isActive: true });
+      if (!planDoc) throw new HttpError(404, 'Plan not found or inactive');
+      updates.planId = planDoc._id;
+      delete updates.planCode;
+    }
+
     const subscription = await subscriptionService.updateSubscription(id, updates);
     res.json({ subscription });
   },
@@ -88,6 +101,7 @@ exports.subscriptionController = {
 
   async getAllPlans(req, res) {
     const plans = await subscriptionService.getAllPlans();
+    console.log("planoooooooooooooooooooooooooooooooooooooooooooo", plans);
     res.json({ plans });
   },
 

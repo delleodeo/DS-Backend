@@ -146,7 +146,7 @@ exports.deleteBatchImages = async (req, res) => {
 exports.confirmImages = async (req, res) => {
   try {
     const { publicIds } = req.body;
-    
+
     if (!publicIds || !Array.isArray(publicIds) || publicIds.length === 0) {
       return res.status(400).json({ error: 'publicIds array is required.' });
     }
@@ -154,10 +154,10 @@ exports.confirmImages = async (req, res) => {
     const results = await Promise.allSettled(
       publicIds.map(id => markAsPermanent(id))
     );
-    
+
     const successful = results.filter(r => r.status === 'fulfilled').length;
     const failed = results.length - successful;
-    
+
     return res.status(200).json({
       message: `Confirmed ${successful} images as permanent.`,
       successful,
@@ -167,5 +167,31 @@ exports.confirmImages = async (req, res) => {
   } catch (err) {
     console.error('[Confirm Images Error]', err);
     return res.status(500).json({ error: err.message || 'Failed to confirm images.' });
+  }
+};
+
+/**
+ * Upload a single profile image
+ * Returns the URL of the uploaded image
+ */
+exports.uploadProfileImage = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No image uploaded.' });
+    }
+
+    return res.status(200).json({
+      message: 'Profile image uploaded successfully.',
+      imageUrl: req.file.path,
+      url: req.file.path,
+      public_id: req.file.filename,
+      width: req.file.width,
+      height: req.file.height,
+      format: req.file.format,
+      bytes: req.file.bytes,
+    });
+  } catch (err) {
+    console.error('[Upload Profile Image Error]', err);
+    return res.status(500).json({ error: 'Something went wrong during upload.' });
   }
 };

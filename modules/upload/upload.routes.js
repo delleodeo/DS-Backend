@@ -1,8 +1,9 @@
 // routes/uploadRoutes.js
 const express = require('express');
 const router = express.Router();
-const { uploadTemp, uploadPermanent, tempUploadHandler, permanentUploadHandler } = require('./upload.service');
+const { uploadTemp, uploadPermanent, uploadProfileImage, tempUploadHandler, permanentUploadHandler, makeProfileUploadHandler } = require('./upload.service');
 const uploadController = require('./upload.controller');
+const { protect } = require('../../auth/auth.controller');
 
 // Legacy upload endpoint (backward compatible)
 router.post('/', uploadTemp.array('images', 10), tempUploadHandler, uploadController.uploadImages);
@@ -12,6 +13,9 @@ router.post('/temp', uploadTemp.array('images', 10), tempUploadHandler, uploadCo
 
 // Permanent upload (for confirmed images)
 router.post('/permanent', uploadPermanent.array('images', 10), permanentUploadHandler, uploadController.uploadPermanentImages);
+
+// Profile image upload (authenticated users only)
+router.post('/profile-image', protect, uploadProfileImage.single('image'), makeProfileUploadHandler(), uploadController.uploadProfileImage);
 
 // Delete single image from Cloudinary
 router.delete('/delete', uploadController.deleteImage);

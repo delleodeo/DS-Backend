@@ -4,7 +4,7 @@ const SubscriptionSchema = new mongoose.Schema(
   {
     sellerId: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: "sellers",
+      ref: "Vendor", // sellerId stores the user._id (seller's user account)
       required: true,
       unique: true,
       index: true,

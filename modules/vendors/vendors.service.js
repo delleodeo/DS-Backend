@@ -120,16 +120,14 @@ exports.getFeaturedSubscribedVendors = async () => {
     const activeSubscriptions = await Subscription.find({ status: 'active' }, { sellerId: 1 });
     const sellerIds = activeSubscriptions.map(sub => sub.sellerId);
 
-    if (sellerIds.length === 0) {
-      // Fallback to regular featured vendors
-      return await exports.getFeaturedVendor();
-    }
+    // if (sellerIds.length === 0) {
+    //   // Fallback to regular featured vendors
+    //   return await exports.getFeaturedVendor();
+    // }
 
     // Get vendor details for subscribed sellers
-    const subscribedVendors = await Vendor.find({ userId: { $in: sellerIds } })
-      .select("storeName userId imageUrl")
-      .lean();
-
+    const subscribedVendors = await Vendor.aggregate([{ $match: { userId: { $in: sellerIds } } }])
+    .project({ storeName: 1, userId: 1, imageUrl: 1 })
     const filteredData = subscribedVendors.map((data) => ({
       storeName: data.storeName,
       userId: data.userId,

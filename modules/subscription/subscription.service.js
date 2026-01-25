@@ -8,8 +8,10 @@ const {
 const { withIdempotency } = require("./idempotency.service.js");
 const paymentService = require("../payments/payments.service.js");
 const Payment = require("../payments/payments.model.js");
-const walletService = require("../wallet/wallet.service.js");
+const VendorWallet = require("../wallet/vendorWallet.model");
 const Vendor = require("../vendors/vendors.model.js");
+const { isRedisAvailable, getRedisClient } = require("../../config/redis");
+const redisClient = getRedisClient();
 
 const ensureValidObjectId = (value, fieldName) => {
   if (!mongoose.Types.ObjectId.isValid(String(value)))
@@ -113,115 +115,190 @@ const renewalAnchorDate = (subscription, now) =>
   subscription.currentPeriodEnd > now ? subscription.currentPeriodEnd : now;
 
 const idempotencyRoutes = {
-  changePlan: "POST http://localhost:3001/v1/sellers/subscription/start-or-change",
+  changePlan:
+    "POST http://localhost:3001/v1/sellers/subscription/start-or-change",
   renew: "POST http://localhost:3001/v1/sellers/subscription/renew",
 };
 
-const buildStartOrChangeHandler = ({ sellerId, normalizedPlanCode, paymentMethod, paymentIntentId }) => {
-  return () =>
-    runInTransaction(async (session) => {
-      const plan = await findActivePlanByCode(normalizedPlanCode);
-      const now = new Date();
+const isDiscountActive = (plan) => {
+  const dp = Number(plan?.discountPercent || 0);
 
-      // Get userId for payment
-      const userId = await getUserIdFromSellerId(sellerId);
+  if (!dp) return false;
+  if (plan?.discountExpiresAt) {
+    const d = new Date(plan.discountExpiresAt).getTime();
+    return Number.isFinite(d) && d > Date.now();
+  }
+  return true;
+};
 
-      // Handle payment if plan has price
-      if (plan.price > 0) {
-        if (paymentMethod === 'wallet') {
-          // Check balance
-          const balance = await walletService.getBalance(userId);
-          if (balance < plan.price) {
-            throw new HttpError(400, `Insufficient wallet balance. Required: ${plan.price}, Available: ${balance}`);
-          }
-          // Deduct from wallet
-          await walletService.debitWallet(userId, plan.price, {
-            description: `Subscription payment for ${plan.name}`,
-            referenceType: 'subscription',
-            referenceId: sellerId,
-            session
-          });
-        } else if (paymentMethod === 'qrph') {
-          // Validate payment intent and ensure it was completed for this seller/plan
-          if (!paymentIntentId) {
-            throw new HttpError(400, 'paymentIntentId is required for QRPH payment confirmation');
-          }
+const discountedPrice = (plan) => {
+  const dp = Number(plan?.discountPercent || 0);
+  if (!isDiscountActive(plan)) return plan?.price || 0;
+  return Math.max(0, (plan.price || 0) * (1 - dp / 100));
+};
 
-          const payment = await paymentService.checkPaymentStatus(paymentIntentId);
+const buildStartOrChangeHandler = ({
+  sellerId,
+  normalizedPlanCode,
+  paymentMethod,
+  paymentIntentId,
+}) => {
+  return async () => {
+    const plan = await findActivePlanByCode(normalizedPlanCode);
+    const now = new Date();
 
-          if (payment.status !== 'succeeded') {
-            throw new HttpError(400, 'Payment has not completed');
-          }
+    const expectedAmountPhp =
+      Math.round(
+        (isDiscountActive(plan) ? discountedPrice(plan) : plan.price) * 100,
+      ) / 100;
 
-          // Verify metadata
-          const meta = payment.metadata || {};
-          const metaSeller = String(meta.get ? meta.get('sellerId') : meta.sellerId);
-          const metaPlan = String(meta.get ? meta.get('planCode') : meta.planCode);
+    const expectedAmountCents = Math.round(expectedAmountPhp * 100);
 
-          if (metaSeller !== String(sellerId)) {
-            throw new HttpError(400, 'Payment metadata seller mismatch');
-          }
+    const userId = await getUserIdFromSellerId(sellerId);
 
-          if (metaPlan !== String(normalizedPlanCode)) {
-            throw new HttpError(400, 'Payment metadata plan mismatch');
-          }
+    // Do external QRPH status check OUTSIDE transaction
+    let qrphPayment = null;
+    if (plan.price > 0 && paymentMethod === "qrph") {
+      if (!paymentIntentId) {
+        throw new HttpError(
+          400,
+          "paymentIntentId is required for QRPH payment confirmation",
+        );
+      }
 
-          // Verify amount matches plan price (in centavos)
-          const expectedAmount = Math.round(plan.price * 100);
-          if (payment.amount !== expectedAmount) {
-            throw new HttpError(400, 'Payment amount does not match plan price');
-          }
+      qrphPayment = await paymentService.checkPaymentStatus(paymentIntentId);
 
-          // Prevent reuse
-          const alreadyUsed = (meta.get && meta.get('subscriptionApplied')) || meta.subscriptionApplied;
-          if (alreadyUsed) {
-            throw new HttpError(400, 'Payment already used for a subscription');
-          }
+      if (qrphPayment?.status !== "succeeded") {
+        throw new HttpError(400, "Payment has not completed");
+      }
 
-          // We'll mark payment used after subscription is saved (below)
-        } else {
-          throw new HttpError(400, 'Invalid payment method');
+      const meta = qrphPayment.metadata || {};
+      const metaSeller = String(
+        meta.get ? meta.get("sellerId") : meta.sellerId,
+      );
+      const metaPlan = String(meta.get ? meta.get("planCode") : meta.planCode);
+
+      if (metaSeller !== String(sellerId)) {
+        throw new HttpError(400, "Payment metadata seller mismatch");
+      }
+      if (metaPlan !== String(normalizedPlanCode)) {
+        throw new HttpError(400, "Payment metadata plan mismatch");
+      }
+
+      const paymentAmountCents = Number(qrphPayment.amount); // centavos
+      if (
+        !Number.isFinite(paymentAmountCents) ||
+        paymentAmountCents !== expectedAmountCents
+      ) {
+        throw new HttpError(400, "Payment amount does not match plan price");
+      }
+
+      const alreadyUsed =
+        (meta.get && meta.get("subscriptionApplied")) ||
+        meta.subscriptionApplied;
+
+      if (alreadyUsed) {
+        throw new HttpError(400, "Payment already used for a subscription");
+      }
+    }
+
+    const result = await runInTransaction(async (session) => {
+      // 1) WALLET debit must be atomic + conditional
+      if (plan.price > 0 && paymentMethod === "wallet") {
+        const updatedWallet = await VendorWallet.findOneAndUpdate(
+          { user: userId, balance: { $gte: expectedAmountPhp } },
+          {
+            $inc: { balance: -expectedAmountPhp },
+            $push: {
+              recentTransactions: {
+                type: "debit",
+                amount: expectedAmountPhp,
+                description: `Subscription payment for plan ${plan.code}`,
+                date: now,
+              },
+            },
+          },
+          { session, new: true, projection: { balance: 1 } },
+        );
+
+        if (!updatedWallet) {
+          const w = await VendorWallet.findOne({ user: userId })
+            .select("balance")
+            .session(session);
+
+          const bal = Number(w?.balance || 0);
+          throw new HttpError(
+            400,
+            `Insufficient wallet balance. Required: ${expectedAmountPhp}, Available: ${bal}`,
+          );
         }
       }
 
-      const subscription = await Subscription.findOne({ sellerId }).session(
+      // 2) Subscription write (handle concurrency safely)
+      // Always enforce unique index on sellerId in DB to prevent duplicates.
+      // Then use upsert for the "create" path to avoid race conditions.
+
+      const existing = await Subscription.findOne({ sellerId }).session(
         session,
       );
 
-      if (!subscription) {
+      if (!existing) {
         const periodEnd = computePeriodEnd(now, plan.interval);
-        const [createdSubscription] = await Subscription.create(
-          [
-            buildNewSubscription({
+
+        const created = await Subscription.findOneAndUpdate(
+          { sellerId },
+          {
+            $setOnInsert: buildNewSubscription({
               sellerId,
               planId: plan._id,
               periodStart: now,
               periodEnd,
             }),
-          ],
-          { session },
+          },
+          { session, upsert: true, new: true },
         );
 
-        // If QRPH, mark payment as used
-        if (paymentMethod === 'qrph' && paymentIntentId) {
-          await Payment.findOneAndUpdate(
-            { paymentIntentId },
-            { $set: { 'metadata.subscriptionApplied': 'true', 'metadata.subscriptionId': createdSubscription._id.toString() } },
-            { session },
+        if (!created?._id)
+          throw new HttpError(500, "Subscription creation failed");
+
+        if (plan.price > 0 && paymentMethod === "qrph" && paymentIntentId) {
+          const p = await Payment.findOneAndUpdate(
+            {
+              paymentIntentId,
+              $or: [
+                { "metadata.subscriptionApplied": { $exists: false } },
+                { "metadata.subscriptionApplied": { $ne: "true" } },
+              ],
+            },
+            {
+              $set: {
+                "metadata.subscriptionApplied": "true",
+                "metadata.subscriptionId": created._id.toString(),
+              },
+            },
+            { session, new: true },
           );
+
+          if (!p)
+            throw new HttpError(400, "Payment already used for a subscription");
         }
 
-        return { subscription: createdSubscription };
+        if (isRedisAvailable()) {
+          await redisClient.del(`products:featured:subscribed`).catch(() => {});
+          await redisClient.del(`vendor:featured:subscribed`).catch(() => {});
+        }
+
+        return { subscription: created };
       }
 
-      const previousPlanId = subscription.planId;
-      const expired = subscriptionIsExpired(subscription, now);
+      const previousPlanId = existing.planId;
+      const expired = subscriptionIsExpired(existing, now);
 
-      subscription.planId = plan._id;
-      markSubscriptionActive(subscription);
+      existing.planId = plan._id;
+      markSubscriptionActive(existing);
 
       addSubscriptionHistory(
-        subscription,
+        existing,
         "changed",
         previousPlanId,
         plan._id,
@@ -230,21 +307,51 @@ const buildStartOrChangeHandler = ({ sellerId, normalizedPlanCode, paymentMethod
           : "Changed plan mid-cycle (no proration)",
       );
 
-      if (expired) setSubscriptionCycle(subscription, now, plan.interval);
+      if (expired) setSubscriptionCycle(existing, now, plan.interval);
 
-      await subscription.save({ session });
+      const saved = await existing.save({ session });
+      if (!saved?._id) throw new HttpError(500, "Subscription update failed");
 
-      // If QRPH, mark payment as used and reference the subscription
-      if (paymentMethod === 'qrph' && paymentIntentId) {
-        await Payment.findOneAndUpdate(
-          { paymentIntentId },
-          { $set: { 'metadata.subscriptionApplied': 'true', 'metadata.subscriptionId': subscription._id.toString() } },
-          { session },
+      if (plan.price > 0 && paymentMethod === "qrph" && paymentIntentId) {
+        const p = await Payment.findOneAndUpdate(
+          {
+            paymentIntentId,
+            $or: [
+              { "metadata.subscriptionApplied": { $exists: false } },
+              { "metadata.subscriptionApplied": { $ne: "true" } },
+            ],
+          },
+          {
+            $set: {
+              "metadata.subscriptionApplied": "true",
+              "metadata.subscriptionId": saved._id.toString(),
+            },
+          },
+          { session, new: true },
         );
+
+        if (!p)
+          throw new HttpError(400, "Payment already used for a subscription");
       }
 
-      return { subscription };
+      if (paymentMethod === "wallet" && isRedisAvailable()) {
+        await redisClient.del(`vendor:${userId}`).catch(() => {});
+        await redisClient.del(`products:featured:subscribed`).catch(() => {});
+        await redisClient.del(`vendor:featured:subscribed`).catch(() => {});
+      }
+
+      return { subscription: saved };
     });
+
+    // cache invalidation AFTER txn commit
+    if (isRedisAvailable()) {
+      await redisClient.del(`vendor:${userId}`).catch(() => {});
+      await redisClient.del(`products:featured:subscribed`).catch(() => {});
+      await redisClient.del(`vendor:featured:subscribed`).catch(() => {});
+    }
+
+    return result;
+  };
 };
 
 exports.subscriptionService = {
@@ -253,7 +360,14 @@ exports.subscriptionService = {
     return Subscription.findOne({ sellerId }).populate("planId");
   },
 
-  startOrChangePlan({ sellerId, planCode, actorUserId, idempotencyKey, paymentMethod = 'wallet', paymentIntentId = undefined }) {
+  startOrChangePlan({
+    sellerId,
+    planCode,
+    actorUserId,
+    idempotencyKey,
+    paymentMethod = "wallet",
+    paymentIntentId = undefined,
+  }) {
     ensureValidObjectId(sellerId, "sellerId");
     const normalizedPlanCode = normalizePlanCode(planCode);
 
@@ -261,8 +375,18 @@ exports.subscriptionService = {
       key: idempotencyKey,
       userId: actorUserId,
       route: idempotencyRoutes.changePlan,
-      body: { sellerId, planCode: normalizedPlanCode, paymentMethod, paymentIntentId },
-      handler: buildStartOrChangeHandler({ sellerId, normalizedPlanCode, paymentMethod, paymentIntentId }),
+      body: {
+        sellerId,
+        planCode: normalizedPlanCode,
+        paymentMethod,
+        paymentIntentId,
+      },
+      handler: buildStartOrChangeHandler({
+        sellerId,
+        normalizedPlanCode,
+        paymentMethod,
+        paymentIntentId,
+      }),
     });
   },
 
@@ -352,17 +476,26 @@ exports.subscriptionService = {
 
   // Admin methods
   async getAllSubscriptions() {
-    return Subscription.find({}).populate("planId sellerId", "name email");
+    // Populate plan details and seller details (use Vendor model and nested User for name/email)
+    // sellerId stores the User _id (seller account). Populate it directly for name/email.
+    return Subscription.find({})
+      .populate("planId")
+      .populate({ path: "sellerId", model: "User", select: "name email" });
   },
 
   async getSubscriptionById(id) {
     ensureValidObjectId(id, "id");
-    return Subscription.findById(id).populate("planId sellerId", "name email");
+    return Subscription.findById(id)
+      .populate("planId")
+      .populate({ path: "sellerId", model: "User", select: "name email" });
   },
 
   async updateSubscription(id, updates) {
     ensureValidObjectId(id, "id");
-    return Subscription.findByIdAndUpdate(id, updates, { new: true }).populate("planId sellerId", "name email");
+    return Subscription.findByIdAndUpdate(id, updates, { new: true }).populate(
+      "planId sellerId",
+      "name email",
+    );
   },
 
   async deleteSubscription(id) {
@@ -381,7 +514,56 @@ exports.subscriptionService = {
 
   async updatePlan(id, updates) {
     ensureValidObjectId(id, "id");
-    return Plan.findByIdAndUpdate(id, updates, { new: true });
+
+    // Validate updates to keep data consistent and secure
+    const sanitized = { ...updates };
+
+    if (sanitized.price !== undefined) {
+      const price = Number(sanitized.price);
+      if (!Number.isFinite(price) || price < 0)
+        throw new HttpError(400, "price must be a non-negative number");
+      sanitized.price = price;
+    }
+
+    if (sanitized.discountPercent !== undefined) {
+      const dp = Number(sanitized.discountPercent);
+      if (!Number.isFinite(dp) || dp < 0 || dp > 100)
+        throw new HttpError(
+          400,
+          "discountPercent must be a number between 0 and 100",
+        );
+      sanitized.discountPercent = dp;
+    }
+
+    if (
+      sanitized.discountExpiresAt !== undefined &&
+      sanitized.discountExpiresAt !== null
+    ) {
+      const d = new Date(sanitized.discountExpiresAt);
+      if (!Number.isFinite(d.getTime()))
+        throw new HttpError(
+          400,
+          "discountExpiresAt must be a valid date or null",
+        );
+      sanitized.discountExpiresAt = d;
+    }
+
+    if (sanitized.features && !Array.isArray(sanitized.features)) {
+      // Allow comma separated string for convenience
+      if (typeof sanitized.features === "string") {
+        sanitized.features = sanitized.features
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean);
+      } else {
+        throw new HttpError(
+          400,
+          "features must be an array of strings or a comma separated string",
+        );
+      }
+    }
+
+    return Plan.findByIdAndUpdate(id, sanitized, { new: true });
   },
 
   async deletePlan(id) {

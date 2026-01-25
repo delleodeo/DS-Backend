@@ -61,6 +61,15 @@ async function invalidateAllProductCaches(productId, vendorId = null) {
   }
 }
 
+const sanitizeText = (value) => {
+  const s = String(value ?? "")
+    .replaceAll("&amp;", "&")
+    .replace(/<[^>]*>/g, "") // remove HTML tags if someone injects
+    .trim()
+    .replace(/\s+/g, " "); // collapse extra spaces
+  return s;
+};
+
 // Product status constants
 const PRODUCT_STATUS = {
   PENDING_REVIEW: "pending_review",
@@ -68,20 +77,20 @@ const PRODUCT_STATUS = {
   REJECTED: "rejected",
 };
 
-async function getPaginatedProducts(skip = 1, limit) {
+async function getPaginatedProducts(skip = 0, limit = 20, randomize = true) {
   skip = sanitizeMongoInput(skip);
   limit = sanitizeMongoInput(limit);
 
   const { limit: limitNum, skip: skipNum } = sanitizePagination(limit, skip);
-  const redisPageKey = `products:approved:limit:${limitNum}`;
+  const redisPageKey = `products:approved:skip:${skipNum}:limit:${limitNum}:rand:${randomize ? 1 : 0}`;
 
   try {
-    let paginatedProducts = await cache.get(redisPageKey);
+    if (cache?.isAvailable?.()) {
+      const cached = await cache.get(redisPageKey);
+      if (cached) return cached;
+    }
 
-    if (paginatedProducts) return paginatedProducts;
-
-    // Only return approved products for public listing (buyers)
-    paginatedProducts = await Product.aggregate([
+    const pipeline = [
       {
         $match: {
           status: PRODUCT_STATUS.APPROVED,
@@ -89,12 +98,25 @@ async function getPaginatedProducts(skip = 1, limit) {
           stock: { $gt: 0 },
         },
       },
-      { $sort: { createdAt: -1 } },
-      { $limit: limitNum },
-    ]);
+    ];
 
-    if (cache.isAvailable())
+    if (randomize) {
+      pipeline.push({ $set: { __r: { $rand: {} } } });
+      pipeline.push({ $sort: { __r: 1 } });
+    } else {
+      pipeline.push({ $sort: { createdAt: -1 } });
+    }
+
+    pipeline.push({ $skip: skipNum });
+    pipeline.push({ $limit: limitNum });
+
+    if (randomize) pipeline.push({ $project: { __r: 0 } });
+
+    const paginatedProducts = await Product.aggregate(pipeline);
+
+    if (cache?.isAvailable?.()) {
       await cache.set(redisPageKey, paginatedProducts, 120);
+    }
 
     return paginatedProducts;
   } catch (error) {
@@ -103,71 +125,99 @@ async function getPaginatedProducts(skip = 1, limit) {
 }
 
 // Get random products from subscribed sellers (max 3 per seller)
-async function getFeaturedSubscribedProducts() {
-  const cacheKey = 'products:featured:subscribed';
+async function getFeaturedSubscribedProducts(municipalities, categories) {
+  const munis = (
+    Array.isArray(municipalities) ? municipalities : [municipalities]
+  )
+    .map((v) => String(v || "").trim())
+    .filter(Boolean);
+
+  const cats = (
+    Array.isArray(categories) ? categories : categories ? [categories] : []
+  )
+    .map((v) => String(v || "").trim())
+    .filter(Boolean);
+
+  const cacheKey = `products:featured:subscribed:${munis.length ? munis.join("|") : "all"}:${cats.length ? cats.join("|") : "all"}`;
 
   try {
-    // Check cache first
-    let cachedProducts = await cache.get(cacheKey);
-    if (cachedProducts) return cachedProducts;
-
-    // Get active subscribed seller IDs
-    const activeSubscriptions = await Subscription.find({ status: 'active' }, { sellerId: 1 });
-    const sellerIds = activeSubscriptions.map(sub => sub.sellerId);
-
-    if (sellerIds.length === 0) {
-      // Fallback to regular products if no subscribed sellers
-      return await getPaginatedProducts(0, 20);
+    if (cache?.isAvailable?.()) {
+      const cached = await cache.get(cacheKey);
+      if (cached) return cached;
     }
 
-    // Fetch all products from subscribed sellers
-    const allProducts = await Product.find({
-      vendorId: { $in: sellerIds },
+    const now = new Date();
+
+    const activeSubscriptions = await Subscription.find(
+      {
+        status: { $regex: /^active$/i },
+        $or: [{ currentPeriodEnd: null }, { currentPeriodEnd: { $gt: now } }],
+      },
+      { sellerId: 1 },
+    ).lean();
+
+    const rawSellerIds = activeSubscriptions
+      .map((s) => s.sellerId)
+      .filter(Boolean);
+
+    const asStrings = rawSellerIds.map((id) => String(id));
+    const asObjectIds = asStrings
+      .filter((id) => mongoose.Types.ObjectId.isValid(id))
+      .map((id) => new mongoose.Types.ObjectId(id));
+
+    const vendorMatchIds = [...asObjectIds, ...asStrings];
+
+    if (!vendorMatchIds.length) return [];
+
+    const match = {
+      vendorId: { $in: vendorMatchIds },
       status: PRODUCT_STATUS.APPROVED,
       isDisabled: { $ne: true },
       stock: { $gt: 0 },
-    });
+    };
 
-    // Group by vendorId
-    const grouped = allProducts.reduce((acc, product) => {
-      if (!acc[product.vendorId]) acc[product.vendorId] = [];
-      acc[product.vendorId].push(product);
-      return acc;
-    }, {});
+    if (munis.length) match.municipality = { $in: munis };
 
-    // For each seller, shuffle and take up to 3
-    const products = [];
-    for (const vendorProducts of Object.values(grouped)) {
-      // Fisher-Yates shuffle
-      for (let i = vendorProducts.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [vendorProducts[i], vendorProducts[j]] = [vendorProducts[j], vendorProducts[i]];
-      }
-      products.push(...vendorProducts.slice(0, 3));
+    if (cats.length) {
+      match.$or = [{ categories: { $in: cats } }, { category: { $in: cats } }];
     }
 
-    // Cache for 5 minutes to allow randomization on refresh
-    if (cache.isAvailable()) {
+    const products = await Product.aggregate([
+      { $match: match },
+      { $set: { __r: { $rand: {} } } },
+      { $sort: { vendorId: 1, __r: 1 } },
+      { $group: { _id: "$vendorId", items: { $push: "$$ROOT" } } },
+      { $project: { items: { $slice: ["$items", 3] } } },
+      { $unwind: "$items" },
+      { $replaceRoot: { newRoot: "$items" } },
+      { $project: { __r: 0 } },
+    ]).allowDiskUse(true);
+
+    if (cache?.isAvailable?.()) {
       await cache.set(cacheKey, products, 300);
     }
 
     return products;
   } catch (error) {
-    logger.error('Error fetching featured subscribed products:', error);
-    // Fallback to regular products
-    return await getPaginatedProducts(0, 20);
+    logger?.error?.("Error fetching featured subscribed products:", error);
+    return [];
   }
 }
 
 async function createProductService(data) {
   // Preserve raw HTML description before sanitization
-  const rawDescription = data?.description;
+  const rawDescription = sanitizeText(data?.description);
+  const rawCategories = (data?.categories ?? []).map(sanitizeText);
 
   data = sanitizeMongoInput(data);
 
   // Restore the HTML description so the model's pre-save hook can properly sanitize it
   if (rawDescription) {
     data.description = rawDescription;
+  }
+
+  if (Array.isArray(rawCategories)) {
+    data.categories = rawCategories;
   }
 
   const session = await mongoose.startSession();
@@ -205,7 +255,9 @@ async function createProductService(data) {
 }
 
 async function getProductsByCategoryService(category, limit, skip) {
-  category = sanitizeMongoInput(category);
+  // category = sanitizeMongoInput(category);
+
+  category = sanitizeText(category);
 
   const { limit: limitNum, skip: skipNum } = sanitizePagination(limit, skip);
 
@@ -249,8 +301,8 @@ async function getProductsByCategoryService(category, limit, skip) {
 
 // get product by municipality
 async function getProductByMunicipality(municipality, category, limit, skip) {
-  municipality = sanitizeMongoInput(municipality);
-  category = sanitizeMongoInput(category);
+  municipality = sanitizeText(municipality);
+  category = sanitizeText(category);
 
   const { limit: limitNum, skip: skipNum } = sanitizePagination(limit, skip);
   if (typeof municipality !== "string" || typeof category !== "string") {
@@ -346,61 +398,118 @@ async function getRelatedProducts(productId, limit = 6) {
   return related;
 }
 
-async function searchProductsService(query, limit = 0, skip = 0) {
-  query = sanitizeMongoInput(query);
+let _textIndexSupport = { checkedAt: 0, supported: null };
+const TEXT_INDEX_TTL_MS = 15 * 60 * 1000;
 
-  if (typeof query !== "string" || query.trim().length === 0) {
+const escapeRegex = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const hasTextIndex = async () => {
+  const now = Date.now();
+  if (
+    _textIndexSupport.supported !== null &&
+    now - _textIndexSupport.checkedAt < TEXT_INDEX_TTL_MS
+  ) {
+    return _textIndexSupport.supported;
+  }
+
+  try {
+    const indexes = await Product.collection.indexes();
+    const supported = indexes.some(
+      (idx) => idx && (idx.weights || idx.key?._fts === "text"),
+    );
+    _textIndexSupport = { checkedAt: now, supported };
+    return supported;
+  } catch {
+    _textIndexSupport = { checkedAt: now, supported: false };
+    return false;
+  }
+};
+
+const buildRegexSearchQuery = (terms) => {
+  const fields = ["name", "description", "categories", "municipality"];
+  const andClauses = terms.map((t) => {
+    const rx = new RegExp(escapeRegex(t), "i");
+    return { $or: fields.map((f) => ({ [f]: rx })) };
+  });
+  return andClauses.length ? { $and: andClauses } : {};
+};
+
+async function searchProductsService(query, limit = 0, skip = 0) {
+  const raw = typeof query === "string" ? query.trim() : "";
+  if (!raw) throw createError("Search query must be a non-empty string", 400);
+  if (raw.length > 256) throw createError("Search query too long", 400);
+
+  const sanitized = sanitizeMongoInput(raw);
+  if (typeof sanitized !== "string" || !sanitized.trim()) {
     throw createError("Search query must be a non-empty string", 400);
   }
-  if (query.length > 256) {
-    throw createError("Search query too long", 400);
-  }
 
-  const terms = query.toLowerCase().trim().split(/\s+/);
+  const terms = sanitized
+    .toLowerCase()
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 10);
+
   const { limit: limitNum, skip: skipNum } = sanitizePagination(limit, skip);
-  const cacheKey = `products:search:${terms.join(
-    "-",
-  )}:limit:${limitNum}:skip:${skipNum}`;
 
-  let paginated = await cache.get(cacheKey);
-  if (paginated) {
+  const cacheKey = `products:search:${terms.join("-")}:limit:${limitNum}:skip:${skipNum}`;
+  const cached = await cache.get(cacheKey);
+  if (cached) {
     logger.debug(`Redis cache hit: ${cacheKey}`);
-    return paginated;
+    return cached;
   }
 
   const baseQuery = {
     status: PRODUCT_STATUS.APPROVED,
     isDisabled: { $ne: true },
+    stock: { $gt: 0 },
   };
 
-  // Prefer MongoDB text search for performance if supported; fallback to regex search
-  try {
-    const textQuery = { $text: { $search: query } };
-    paginated = await Product.find(
-      { ...baseQuery, ...textQuery, stock: { $gt: 0 } },
-      { score: { $meta: "textScore" } },
-    )
-      .sort({ score: { $meta: "textScore" }, createdAt: -1 })
-      .skip(skipNum)
-      .limit(limitNum > 0 ? limitNum : 0)
-      .lean({ virtuals: true });
-  } catch (err) {
-    // If $text fails (e.g., no text index), fall back to regex-based search
-    const searchQuery = buildSearchQuery(terms);
-    const queryObj = { ...baseQuery, ...searchQuery };
+  let results = [];
+  const canTextSearch = await hasTextIndex();
 
-    paginated = await Product.find(queryObj)
+  if (canTextSearch) {
+    try {
+      results = await Product.find(
+        { ...baseQuery, $text: { $search: raw } },
+        { score: { $meta: "textScore" } },
+      )
+        .sort({ score: { $meta: "textScore" }, createdAt: -1 })
+        .skip(skipNum)
+        .limit(limitNum > 0 ? limitNum : 0)
+        .lean({ virtuals: true });
+
+      if (results.length === 0 && terms.length) {
+        const regexQuery = buildRegexSearchQuery(terms);
+        results = await Product.find({ ...baseQuery, ...regexQuery })
+          .sort({ createdAt: -1 })
+          .skip(skipNum)
+          .limit(limitNum > 0 ? limitNum : 0)
+          .lean({ virtuals: true });
+      }
+    } catch {
+      const regexQuery = buildRegexSearchQuery(terms);
+      results = await Product.find({ ...baseQuery, ...regexQuery })
+        .sort({ createdAt: -1 })
+        .skip(skipNum)
+        .limit(limitNum > 0 ? limitNum : 0)
+        .lean({ virtuals: true });
+    }
+  } else {
+    const regexQuery = buildRegexSearchQuery(terms);
+    results = await Product.find({ ...baseQuery, ...regexQuery })
       .sort({ createdAt: -1 })
       .skip(skipNum)
       .limit(limitNum > 0 ? limitNum : 0)
       .lean({ virtuals: true });
   }
 
-  if (cache.isAvailable() && paginated.length > 0) {
-    await cache.set(cacheKey, paginated, 600); // 10 min TTL
+  if (cache.isAvailable() && results.length > 0) {
+    await cache.set(cacheKey, results, 600);
   }
 
-  return paginated;
+  return results;
 }
 
 async function getProductByVendor(vendorId, limit = 15, skip = 0) {
@@ -485,16 +594,19 @@ async function getProductByIdService(id, visitorId = null) {
 
   const productDoc = await Product.findById(id).lean();
 
-  const {trackProductView,} = require("../vendors/subcriptors/subscriptor.sevice.js");
+  // ({ productId, visitorId })
+  if (!productDoc) {
+    throw createError("Product not found", 404);
+  }
+
+  const {
+    trackProductView,
+  } = require("../vendors/subcriptors/subscriptor.sevice.js");
   await trackProductView({
     productId: id,
     visitorId,
     vendorUserId: productDoc.vendorId,
   });
-  // ({ productId, visitorId })
-  if (!productDoc) {
-    throw createError("Product not found", 404);
-  }
 
   const product = productDoc;
 

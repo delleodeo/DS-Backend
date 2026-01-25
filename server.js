@@ -52,6 +52,14 @@ const startServer = async () => {
     // Start subscription expiration cron job (daily at midnight)
     startSubscriptionExpireCron();
 
+    // Verify mailer connectivity (non-fatal: log and continue if it fails)
+    const { verifyMailer } = require("./utils/verification");
+    try {
+      await verifyMailer();
+    } catch (err) {
+      console.warn("Mailer verification failed on startup. Email delivery may be degraded. See logs for details.");
+    }
+
     // Export server and io for potential use in other modules
     module.exports = { app, server, io };
     
